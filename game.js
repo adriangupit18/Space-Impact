@@ -175,8 +175,13 @@ class InputHandler {
         this.touchStart = null;
         this.touchEnd = null;
         this.touchActive = false;
-        this.isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstart' in window);
+        this.isMobile =
+            /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+            ('ontouchstart' in window) ||
+            ((navigator.maxTouchPoints || 0) > 0);
+        this.showVirtualControls = this.isMobile;
         this.canvasRect = { left: 0, top: 0, width: 800, height: 500 };
+        this.tapPoints = [];
 
         this.joystick = {
             active: false,
@@ -187,7 +192,7 @@ class InputHandler {
             knobY: 410,
             radius: 46,
             knobRadius: 18,
-            deadZone: 0.18,
+            deadZone: 0.12,
             sensitivity: 1,
             dx: 0,
             dy: 0
@@ -223,6 +228,13 @@ class InputHandler {
         document.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
         document.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
         document.addEventListener('touchcancel', (e) => this.handleTouchEnd(e), { passive: false });
+
+        // Mouse click support for UI buttons.
+        document.addEventListener('click', (e) => {
+            const p = this.toCanvasSpace(e.clientX, e.clientY);
+            this.tapPoints.push(p);
+            if (this.tapPoints.length > 6) this.tapPoints.shift();
+        });
     }
 
     setCanvasRect(rect) {
@@ -238,6 +250,10 @@ class InputHandler {
         this.sensitivitySlider.x1 = rect.width * 0.64;
         this.sensitivitySlider.x2 = rect.width * 0.94;
         this.sensitivitySlider.y = rect.height * 0.12;
+    }
+
+    setVirtualControlsVisible(visible) {
+        this.showVirtualControls = visible;
     }
 
     toCanvasSpace(clientX, clientY) {
@@ -278,14 +294,18 @@ class InputHandler {
     }
 
     handleTouchStart(e) {
-        if (this.isMobile) e.preventDefault();
+        if (e.touches && e.touches.length > 0) {
+            this.isMobile = true;
+            this.showVirtualControls = true;
+        }
+        if (this.showVirtualControls) e.preventDefault();
 
         for (let i = 0; i < e.changedTouches.length; i++) {
             const touch = e.changedTouches[i];
             const p = this.toCanvasSpace(touch.clientX, touch.clientY);
 
             if (
-                this.isMobile &&
+                this.showVirtualControls &&
                 !this.sensitivitySlider.active &&
                 p.y >= this.sensitivitySlider.y - 20 &&
                 p.y <= this.sensitivitySlider.y + 20 &&
@@ -299,11 +319,15 @@ class InputHandler {
             }
 
             if (
-                this.isMobile &&
+                this.showVirtualControls &&
                 !this.joystick.active &&
-                p.x < this.canvasRect.width * 0.5 &&
-                Math.hypot(p.x - this.joystick.baseX, p.y - this.joystick.baseY) <= this.joystick.radius * 2
+                p.x < this.canvasRect.width * 0.5
             ) {
+                // Floating joystick: lock base where the thumb first touches.
+                this.joystick.baseX = p.x;
+                this.joystick.baseY = p.y;
+                this.joystick.knobX = p.x;
+                this.joystick.knobY = p.y;
                 this.joystick.active = true;
                 this.joystick.touchId = touch.identifier;
                 this.updateJoystickFromPoint(p.x, p.y);
@@ -311,11 +335,13 @@ class InputHandler {
             }
 
             if (
-                this.isMobile &&
+                this.showVirtualControls &&
                 !this.fireButton.active &&
-                p.x >= this.canvasRect.width * 0.5 &&
-                Math.hypot(p.x - this.fireButton.x, p.y - this.fireButton.y) <= this.fireButton.radius * 2
+                p.x >= this.canvasRect.width * 0.5
             ) {
+                // Floating fire button: any right-half touch starts firing.
+                this.fireButton.x = p.x;
+                this.fireButton.y = p.y;
                 this.fireButton.active = true;
                 this.fireButton.touchId = touch.identifier;
                 continue;
@@ -327,7 +353,7 @@ class InputHandler {
     }
 
     handleTouchMove(e) {
-        if (this.isMobile) e.preventDefault();
+        if (this.showVirtualControls) e.preventDefault();
 
         for (let i = 0; i < e.changedTouches.length; i++) {
             const touch = e.changedTouches[i];
@@ -343,15 +369,23 @@ class InputHandler {
                 continue;
             }
 
+            if (this.fireButton.active && touch.identifier === this.fireButton.touchId) {
+                this.fireButton.x = p.x;
+                this.fireButton.y = p.y;
+                continue;
+            }
+
             this.touchEnd = { x: touch.clientX, y: touch.clientY };
         }
     }
 
     handleTouchEnd(e) {
-        if (this.isMobile) e.preventDefault();
+        if (this.showVirtualControls) e.preventDefault();
 
         for (let i = 0; i < e.changedTouches.length; i++) {
             const touch = e.changedTouches[i];
+            const p = this.toCanvasSpace(touch.clientX, touch.clientY);
+            let releasedControl = false;
 
             if (this.joystick.active && touch.identifier === this.joystick.touchId) {
                 this.joystick.active = false;
@@ -360,16 +394,26 @@ class InputHandler {
                 this.joystick.dy = 0;
                 this.joystick.knobX = this.joystick.baseX;
                 this.joystick.knobY = this.joystick.baseY;
+                releasedControl = true;
             }
 
             if (this.fireButton.active && touch.identifier === this.fireButton.touchId) {
                 this.fireButton.active = false;
                 this.fireButton.touchId = null;
+                this.fireButton.x = this.canvasRect.width * 0.88;
+                this.fireButton.y = this.canvasRect.height * 0.82;
+                releasedControl = true;
             }
 
             if (this.sensitivitySlider.active && touch.identifier === this.sensitivitySlider.touchId) {
                 this.sensitivitySlider.active = false;
                 this.sensitivitySlider.touchId = null;
+                releasedControl = true;
+            }
+
+            if (!releasedControl) {
+                this.tapPoints.push(p);
+                if (this.tapPoints.length > 6) this.tapPoints.shift();
             }
         }
 
@@ -393,7 +437,7 @@ class InputHandler {
     }
     
     getTouchInput(canvasWidth, canvasHeight) {
-        if (this.isMobile) {
+        if (this.showVirtualControls) {
             const x = this.applyDeadZone(this.joystick.dx);
             const y = this.applyDeadZone(this.joystick.dy);
             // Curved response gives finer control near center while still allowing max speed.
@@ -431,7 +475,7 @@ class InputHandler {
     }
 
     drawMobileControls(ctx) {
-        if (!this.isMobile) return;
+        if (!this.showVirtualControls) return;
 
         ctx.save();
 
@@ -492,6 +536,23 @@ class InputHandler {
         ctx.fillText(`SENS ${this.joystick.sensitivity.toFixed(2)}x`, (this.sensitivitySlider.x1 + this.sensitivitySlider.x2) / 2, this.sensitivitySlider.y - 12);
 
         ctx.restore();
+    }
+
+    consumeTapInRect(rect) {
+        if (!rect) return false;
+        for (let i = 0; i < this.tapPoints.length; i++) {
+            const p = this.tapPoints[i];
+            if (
+                p.x >= rect.x &&
+                p.x <= rect.x + rect.width &&
+                p.y >= rect.y &&
+                p.y <= rect.y + rect.height
+            ) {
+                this.tapPoints.splice(i, 1);
+                return true;
+            }
+        }
+        return false;
     }
 }
 
@@ -1690,6 +1751,10 @@ class Game {
         this.bossWarningTimer = 0;
         this.bossWarningText = 'BOSS INCOMING!';
         this.laserBeamRect = null;
+        this.startButtonRect = null;
+        this.modeStoryButtonRect = null;
+        this.modeEndlessButtonRect = null;
+        this.gameOverButtonRect = null;
         
         // Game loop
         this.lastTime = Date.now();
@@ -1705,6 +1770,7 @@ class Game {
         const ratio = this.baseWidth / this.baseHeight;
         const maxWidth = this.inputHandler.isMobile ? Math.min(window.innerWidth, 980) : this.baseWidth;
         const maxHeight = this.inputHandler.isMobile ? Math.min(window.innerHeight, 760) : this.baseHeight;
+        const coarsePointer = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 
         let width = maxWidth;
         let height = Math.round(width / ratio);
@@ -1721,6 +1787,8 @@ class Game {
 
         this.canvasWidth = width;
         this.canvasHeight = height;
+
+        this.inputHandler.setVirtualControlsVisible(this.inputHandler.isMobile || coarsePointer || width <= 900);
 
         const rect = this.canvas.getBoundingClientRect();
         this.inputHandler.setCanvasRect({
@@ -1799,14 +1867,15 @@ class Game {
         this.stars.forEach(star => star.update());
         this.stars = this.stars.filter(star => !star.isOffScreen(this.canvasWidth));
         this.stars.push(new Star(this.canvasWidth, Math.random() * this.canvasHeight));
-        
+
+        const pressedStartButton = this.inputHandler.consumeTapInRect(this.startButtonRect);
         // Check for Enter key
-        if (this.inputHandler.isEnterPressed() && !this.enterKeyPressed) {
+        if ((this.inputHandler.isEnterPressed() || pressedStartButton) && !this.enterKeyPressed) {
             this.enterKeyPressed = true;
             this.gameState = 'modeSelect';
         }
-        
-        if (!this.inputHandler.isEnterPressed()) {
+
+        if (!this.inputHandler.isEnterPressed() && !pressedStartButton) {
             this.enterKeyPressed = false;
         }
     }
@@ -1816,19 +1885,22 @@ class Game {
         this.stars.forEach(star => star.update());
         this.stars = this.stars.filter(star => !star.isOffScreen(this.canvasWidth));
         this.stars.push(new Star(this.canvasWidth, Math.random() * this.canvasHeight));
+
+        const pressedStoryButton = this.inputHandler.consumeTapInRect(this.modeStoryButtonRect);
+        const pressedEndlessButton = this.inputHandler.consumeTapInRect(this.modeEndlessButtonRect);
         
         // Check for number keys 1 or 2
-        if (this.inputHandler.isKeyPressed('1') && !this.enterKeyPressed) {
+        if ((this.inputHandler.isKeyPressed('1') || pressedStoryButton) && !this.enterKeyPressed) {
             this.enterKeyPressed = true;
             this.gameMode = 'story';
             this.startNewGame();
-        } else if (this.inputHandler.isKeyPressed('2') && !this.enterKeyPressed) {
+        } else if ((this.inputHandler.isKeyPressed('2') || pressedEndlessButton) && !this.enterKeyPressed) {
             this.enterKeyPressed = true;
             this.gameMode = 'endless';
             this.startNewGame();
         }
-        
-        if (!this.inputHandler.isKeyPressed('1') && !this.inputHandler.isKeyPressed('2')) {
+
+        if (!this.inputHandler.isKeyPressed('1') && !this.inputHandler.isKeyPressed('2') && !pressedStoryButton && !pressedEndlessButton) {
             this.enterKeyPressed = false;
         }
     }
@@ -2260,15 +2332,16 @@ class Game {
         this.stars.forEach(star => star.update());
         this.stars = this.stars.filter(star => !star.isOffScreen(this.canvasWidth));
         this.stars.push(new Star(this.canvasWidth, Math.random() * this.canvasHeight));
-        
-        if (this.inputHandler.isEnterPressed() && !this.enterKeyPressed) {
+
+        const pressedButton = this.inputHandler.consumeTapInRect(this.gameOverButtonRect);
+        if ((this.inputHandler.isEnterPressed() || pressedButton) && !this.enterKeyPressed) {
             this.enterKeyPressed = true;
             this.gameState = 'start';
             this.level = 1;
             this.wave = 1;
         }
-        
-        if (!this.inputHandler.isEnterPressed()) {
+
+        if (!this.inputHandler.isEnterPressed() && !pressedButton) {
             this.enterKeyPressed = false;
         }
     }
@@ -2379,6 +2452,23 @@ class Game {
         this.ctx.globalAlpha = 0.5 + blinkAlpha * 0.5;
         this.ctx.fillText('Press ENTER to Continue', this.canvasWidth / 2, 400);
         this.ctx.globalAlpha = 1;
+
+        const btnWidth = 260;
+        const btnHeight = 52;
+        const btnX = this.canvasWidth / 2 - btnWidth / 2;
+        const btnY = this.canvasHeight - 110;
+        this.startButtonRect = { x: btnX, y: btnY, width: btnWidth, height: btnHeight };
+
+        this.ctx.fillStyle = 'rgba(0, 220, 120, 0.22)';
+        this.ctx.fillRect(btnX, btnY, btnWidth, btnHeight);
+        this.ctx.strokeStyle = '#7cffbf';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(btnX, btnY, btnWidth, btnHeight);
+
+        this.ctx.fillStyle = '#d7ffe8';
+        this.ctx.font = 'bold 22px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('ENTER GAME', btnX + btnWidth / 2, btnY + 34);
     }
     
     drawModeSelect() {
@@ -2406,6 +2496,28 @@ class Game {
         this.ctx.font = '18px Arial';
         this.ctx.fillStyle = '#ffffff';
         this.ctx.fillText('Infinite Waves with Increasing Difficulty', this.canvasWidth / 2, 370);
+
+        const btnWidth = 300;
+        const btnHeight = 48;
+        const storyBtnX = this.canvasWidth / 2 - btnWidth / 2;
+        const storyBtnY = 195;
+        const endlessBtnX = this.canvasWidth / 2 - btnWidth / 2;
+        const endlessBtnY = 305;
+
+        this.modeStoryButtonRect = { x: storyBtnX, y: storyBtnY, width: btnWidth, height: btnHeight };
+        this.modeEndlessButtonRect = { x: endlessBtnX, y: endlessBtnY, width: btnWidth, height: btnHeight };
+
+        this.ctx.fillStyle = 'rgba(0, 190, 255, 0.16)';
+        this.ctx.fillRect(storyBtnX, storyBtnY, btnWidth, btnHeight);
+        this.ctx.strokeStyle = '#5cd2ff';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(storyBtnX, storyBtnY, btnWidth, btnHeight);
+
+        this.ctx.fillStyle = 'rgba(255, 220, 0, 0.14)';
+        this.ctx.fillRect(endlessBtnX, endlessBtnY, btnWidth, btnHeight);
+        this.ctx.strokeStyle = '#ffe072';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(endlessBtnX, endlessBtnY, btnWidth, btnHeight);
     }
     
     drawGameplay() {
@@ -2466,6 +2578,23 @@ class Game {
         this.ctx.globalAlpha = 0.5 + blinkAlpha * 0.5;
         this.ctx.fillText('Press ENTER to Return to Menu', this.canvasWidth / 2, 420);
         this.ctx.globalAlpha = 1;
+
+        const btnWidth = 240;
+        const btnHeight = 52;
+        const btnX = this.canvasWidth / 2 - btnWidth / 2;
+        const btnY = this.canvasHeight - 118;
+        this.gameOverButtonRect = { x: btnX, y: btnY, width: btnWidth, height: btnHeight };
+
+        this.ctx.fillStyle = 'rgba(0, 220, 120, 0.22)';
+        this.ctx.fillRect(btnX, btnY, btnWidth, btnHeight);
+        this.ctx.strokeStyle = '#7cffbf';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(btnX, btnY, btnWidth, btnHeight);
+
+        this.ctx.fillStyle = '#d7ffe8';
+        this.ctx.font = 'bold 22px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('ENTER GAME', btnX + btnWidth / 2, btnY + 33);
     }
     
     drawHUD() {
