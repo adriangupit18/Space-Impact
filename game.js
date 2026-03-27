@@ -346,11 +346,7 @@ class InputHandler {
                 !this.joystick.active &&
                 p.x < this.canvasRect.width * 0.5
             ) {
-                // Floating joystick: lock base where the thumb first touches.
-                this.joystick.baseX = p.x;
-                this.joystick.baseY = p.y;
-                this.joystick.knobX = p.x;
-                this.joystick.knobY = p.y;
+                // Fixed joystick: base stays in its configured position.
                 this.joystick.active = true;
                 this.joystick.touchId = touch.identifier;
                 this.updateJoystickFromPoint(p.x, p.y);
@@ -362,9 +358,7 @@ class InputHandler {
                 !this.fireButton.active &&
                 p.x >= this.canvasRect.width * 0.5
             ) {
-                // Floating fire button: any right-half touch starts firing.
-                this.fireButton.x = p.x;
-                this.fireButton.y = p.y;
+                // Fixed fire button: hold any right-half touch to fire.
                 this.fireButton.active = true;
                 this.fireButton.touchId = touch.identifier;
                 continue;
@@ -394,8 +388,6 @@ class InputHandler {
             }
 
             if (this.fireButton.active && touch.identifier === this.fireButton.touchId) {
-                this.fireButton.x = p.x;
-                this.fireButton.y = p.y;
                 continue;
             }
 
@@ -425,8 +417,6 @@ class InputHandler {
             if (this.fireButton.active && touch.identifier === this.fireButton.touchId) {
                 this.fireButton.active = false;
                 this.fireButton.touchId = null;
-                this.fireButton.x = this.canvasRect.width * 0.88;
-                this.fireButton.y = this.canvasRect.height * 0.82;
                 releasedControl = true;
             }
 
@@ -1317,6 +1307,8 @@ class Boss {
         this.shootCounter = 0;
         this.pattern = 0;
         this.attackPhase = 0;
+        this.shootInterval = Math.max(8, 20 - Math.floor((level - 1) * 0.7));
+        this.bulletBaseSpeed = 2.6 + Math.min(2.2, (level - 1) * 0.16);
         this.assetManager = assetManager;
         this.engineSprite = null;
         
@@ -1380,7 +1372,7 @@ class Boss {
     }
     
     shouldShoot() {
-        return this.shootCounter > 20;
+        return this.shootCounter > this.shootInterval;
     }
     
     resetShootCounter() {
@@ -1392,17 +1384,37 @@ class Boss {
         const bullets = [];
         const startX = this.x + 20;
         const startY = this.y;
+        const laneBonus = Math.floor((this.level - 1) / 4);
+        const spreadBonus = Math.floor((this.level - 1) / 3);
         
         if (this.pattern === 0) {
             // Straight line pattern
-            for (let i = -1; i <= 1; i++) {
-                bullets.push({ x: startX, y: startY + i * 15, targetX: playerX, targetY: playerY });
+            const laneCount = Math.min(9, 3 + laneBonus * 2);
+            const half = Math.floor(laneCount / 2);
+            for (let i = -half; i <= half; i++) {
+                bullets.push({
+                    x: startX,
+                    y: startY + i * 14,
+                    targetX: playerX,
+                    targetY: playerY,
+                    speed: this.bulletBaseSpeed
+                });
             }
         } else if (this.pattern === 1) {
             // Spread pattern
-            for (let i = -2; i <= 2; i++) {
-                const angleOffset = i * 15;
-                bullets.push({ x: startX, y: startY + angleOffset, targetX: playerX + Math.random() * 100 - 50, targetY: playerY });
+            const spreadCount = Math.min(11, 5 + spreadBonus * 2);
+            const half = Math.floor(spreadCount / 2);
+            const spreadWidth = 16 + spreadBonus * 2;
+            const randomAim = 60 + spreadBonus * 20;
+            for (let i = -half; i <= half; i++) {
+                const angleOffset = i * spreadWidth;
+                bullets.push({
+                    x: startX,
+                    y: startY + angleOffset,
+                    targetX: playerX + Math.random() * randomAim - randomAim / 2,
+                    targetY: playerY,
+                    speed: this.bulletBaseSpeed + 0.35
+                });
             }
         }
         
@@ -1736,7 +1748,7 @@ class Game {
         this.level = 1;
         this.wave = 1;
         this.wavesPerLevel = 3;
-        this.bossLevelInterval = 10;
+        this.bossLevelInterval = 5;
         this.waveMultiplier = 1;
         this.bossActive = false;
         
@@ -1793,16 +1805,30 @@ class Game {
 
     resizeCanvas() {
         const ratio = this.baseWidth / this.baseHeight;
-        const maxWidth = this.inputHandler.isMobile ? Math.min(window.innerWidth, 980) : this.baseWidth;
-        const maxHeight = this.inputHandler.isMobile ? Math.min(window.innerHeight, 760) : this.baseHeight;
         const coarsePointer = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+        const useFullMobileViewport = this.inputHandler.isMobile || coarsePointer;
 
-        let width = maxWidth;
-        let height = Math.round(width / ratio);
+        const viewportWidth = Math.floor((window.visualViewport && window.visualViewport.width) || window.innerWidth);
+        const viewportHeight = Math.floor((window.visualViewport && window.visualViewport.height) || window.innerHeight);
 
-        if (height > maxHeight) {
-            height = maxHeight;
-            width = Math.round(height * ratio);
+        let width = this.baseWidth;
+        let height = this.baseHeight;
+
+        if (useFullMobileViewport) {
+            // Fill the available phone viewport to avoid large black margins.
+            width = Math.max(320, viewportWidth);
+            height = Math.max(300, viewportHeight);
+        } else {
+            const maxWidth = this.baseWidth;
+            const maxHeight = this.baseHeight;
+
+            width = maxWidth;
+            height = Math.round(width / ratio);
+
+            if (height > maxHeight) {
+                height = maxHeight;
+                width = Math.round(height * ratio);
+            }
         }
 
         this.canvas.style.width = `${width}px`;
@@ -1813,7 +1839,7 @@ class Game {
         this.canvasWidth = width;
         this.canvasHeight = height;
 
-        this.inputHandler.setVirtualControlsVisible(this.inputHandler.isMobile || coarsePointer || width <= 900);
+        this.inputHandler.setVirtualControlsVisible(useFullMobileViewport || width <= 900);
 
         const rect = this.canvas.getBoundingClientRect();
         this.inputHandler.setCanvasRect({
@@ -2074,8 +2100,8 @@ class Game {
         // Check if wave is complete
         if (!this.bossActive && !this.boss && this.waveStarted && this.waveEnemiesSpawned >= this.enemiesToSpawn && this.enemies.length === 0) {
             if (this.gameMode === 'endless') {
-                // Endless mode: boss every 10 waves
-                if (this.wave % 10 === 0) {
+                // Endless mode: boss every 5 waves
+                if (this.wave % 5 === 0) {
                     this.gameState = 'bossWarn';
                     this.bossWarningTimer = 120;
                     return;
@@ -2138,7 +2164,16 @@ class Game {
             if (this.boss.shouldShoot()) {
                 const bulletPatterns = this.boss.getBulletPattern(this.player.x, this.player.y);
                 bulletPatterns.forEach(bp => {
-                    this.enemyBullets.push(new EnemyBullet(bp.x, bp.y, bp.targetX, bp.targetY, 2.6, 'aimed', 'standard', this.assetManager));
+                    this.enemyBullets.push(new EnemyBullet(
+                        bp.x,
+                        bp.y,
+                        bp.targetX,
+                        bp.targetY,
+                        bp.speed || 2.6,
+                        'aimed',
+                        'standard',
+                        this.assetManager
+                    ));
                 });
                 this.boss.resetShootCounter();
             }
@@ -2342,7 +2377,7 @@ class Game {
         if (this.bossWarningTimer <= 0) {
             let bossLevel = 1;
             if (this.gameMode === 'endless') {
-                bossLevel = Math.max(1, Math.floor(this.wave / 10));
+                bossLevel = Math.max(1, Math.floor(this.wave / 5));
             } else {
                 bossLevel = this.level;
             }
@@ -2547,7 +2582,7 @@ class Game {
         if (compact) {
             this.ctx.fillText('Campaign progression with boss fights', this.canvasWidth / 2, storyY + 28);
         } else {
-            this.ctx.fillText('10 Levels with 3 Waves Each + Boss Every 10 Levels', this.canvasWidth / 2, storyY + 40);
+            this.ctx.fillText('10 Levels with 3 Waves Each + Boss Every 5 Levels', this.canvasWidth / 2, storyY + 40);
         }
         
         // Endless mode
