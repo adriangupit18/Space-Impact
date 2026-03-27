@@ -171,6 +171,7 @@ class AnimatedSprite {
  */
 class InputHandler {
     constructor() {
+        this.storageKey = 'spaceImpactMobileControlsV1';
         this.keys = {};
         this.touchStart = null;
         this.touchEnd = null;
@@ -183,6 +184,20 @@ class InputHandler {
         this.gameplayTouchControlsEnabled = false;
         this.canvasRect = { left: 0, top: 0, width: 800, height: 500 };
         this.tapPoints = [];
+        this.customizeMode = false;
+        this.customizeDrag = null;
+
+        this.controlLayout = {
+            joystickXRatio: 0.16,
+            joystickYRatio: 0.82,
+            fireXRatio: 0.88,
+            fireYRatio: 0.82,
+            joystickRadiusRatio: 0.092,
+            fireRadiusRatio: 0.084,
+            sensitivity: 1
+        };
+
+        this.loadControlLayout();
 
         this.joystick = {
             active: false,
@@ -215,6 +230,24 @@ class InputHandler {
             y: 58,
             value: 0.5
         };
+
+        this.joystickSizeSlider = {
+            active: false,
+            touchId: null,
+            x1: 560,
+            x2: 760,
+            y: 84,
+            value: 0.5
+        };
+
+        this.fireSizeSlider = {
+            active: false,
+            touchId: null,
+            x1: 560,
+            x2: 760,
+            y: 110,
+            value: 0.5
+        };
         
         window.addEventListener('keydown', (e) => {
             this.keys[e.key] = true;
@@ -240,17 +273,112 @@ class InputHandler {
 
     setCanvasRect(rect) {
         this.canvasRect = rect;
-        this.joystick.baseX = rect.width * 0.16;
-        this.joystick.baseY = rect.height * 0.82;
+        const minDim = Math.min(rect.width, rect.height);
+
+        const joyR = Math.max(24, minDim * this.controlLayout.joystickRadiusRatio);
+        const fireR = Math.max(22, minDim * this.controlLayout.fireRadiusRatio);
+
+        this.joystick.radius = joyR;
+        this.joystick.knobRadius = Math.max(10, joyR * 0.4);
+        this.fireButton.radius = fireR;
+
+        this.joystick.baseX = this.clamp(this.controlLayout.joystickXRatio * rect.width, joyR + 8, rect.width - joyR - 8);
+        this.joystick.baseY = this.clamp(this.controlLayout.joystickYRatio * rect.height, joyR + 8, rect.height - joyR - 8);
         if (!this.joystick.active) {
             this.joystick.knobX = this.joystick.baseX;
             this.joystick.knobY = this.joystick.baseY;
         }
-        this.fireButton.x = rect.width * 0.88;
-        this.fireButton.y = rect.height * 0.82;
+        this.fireButton.x = this.clamp(this.controlLayout.fireXRatio * rect.width, fireR + 8, rect.width - fireR - 8);
+        this.fireButton.y = this.clamp(this.controlLayout.fireYRatio * rect.height, fireR + 8, rect.height - fireR - 8);
+
         this.sensitivitySlider.x1 = rect.width * 0.64;
         this.sensitivitySlider.x2 = rect.width * 0.94;
         this.sensitivitySlider.y = rect.height * 0.12;
+
+        this.joystickSizeSlider.x1 = rect.width * 0.64;
+        this.joystickSizeSlider.x2 = rect.width * 0.94;
+        this.joystickSizeSlider.y = rect.height * 0.17;
+
+        this.fireSizeSlider.x1 = rect.width * 0.64;
+        this.fireSizeSlider.x2 = rect.width * 0.94;
+        this.fireSizeSlider.y = rect.height * 0.22;
+
+        this.joystick.sensitivity = this.clamp(this.controlLayout.sensitivity, 0.6, 1.5);
+        this.sensitivitySlider.value = (this.joystick.sensitivity - 0.6) / 0.9;
+        this.joystickSizeSlider.value = this.radiusRatioToSlider(this.controlLayout.joystickRadiusRatio);
+        this.fireSizeSlider.value = this.radiusRatioToSlider(this.controlLayout.fireRadiusRatio);
+    }
+
+    clamp(v, min, max) {
+        return Math.max(min, Math.min(max, v));
+    }
+
+    radiusRatioToSlider(ratio) {
+        const minRatio = 0.06;
+        const maxRatio = 0.16;
+        return this.clamp((ratio - minRatio) / (maxRatio - minRatio), 0, 1);
+    }
+
+    sliderToRadiusRatio(value) {
+        const minRatio = 0.06;
+        const maxRatio = 0.16;
+        return minRatio + this.clamp(value, 0, 1) * (maxRatio - minRatio);
+    }
+
+    loadControlLayout() {
+        try {
+            const raw = localStorage.getItem(this.storageKey);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return;
+
+            this.controlLayout.joystickXRatio = this.clamp(parsed.joystickXRatio ?? this.controlLayout.joystickXRatio, 0.08, 0.45);
+            this.controlLayout.joystickYRatio = this.clamp(parsed.joystickYRatio ?? this.controlLayout.joystickYRatio, 0.4, 0.94);
+            this.controlLayout.fireXRatio = this.clamp(parsed.fireXRatio ?? this.controlLayout.fireXRatio, 0.55, 0.95);
+            this.controlLayout.fireYRatio = this.clamp(parsed.fireYRatio ?? this.controlLayout.fireYRatio, 0.4, 0.94);
+            this.controlLayout.joystickRadiusRatio = this.clamp(parsed.joystickRadiusRatio ?? this.controlLayout.joystickRadiusRatio, 0.06, 0.16);
+            this.controlLayout.fireRadiusRatio = this.clamp(parsed.fireRadiusRatio ?? this.controlLayout.fireRadiusRatio, 0.06, 0.16);
+            this.controlLayout.sensitivity = this.clamp(parsed.sensitivity ?? this.controlLayout.sensitivity, 0.6, 1.5);
+        } catch (err) {
+            // Ignore malformed saved layout and keep defaults.
+        }
+    }
+
+    saveControlLayout() {
+        try {
+            localStorage.setItem(this.storageKey, JSON.stringify(this.controlLayout));
+        } catch (err) {
+            // Ignore storage failures.
+        }
+    }
+
+    resetControlLayout() {
+        this.controlLayout = {
+            joystickXRatio: 0.16,
+            joystickYRatio: 0.82,
+            fireXRatio: 0.88,
+            fireYRatio: 0.82,
+            joystickRadiusRatio: 0.092,
+            fireRadiusRatio: 0.084,
+            sensitivity: 1
+        };
+        this.setCanvasRect(this.canvasRect);
+        this.saveControlLayout();
+    }
+
+    setCustomizeMode(enabled) {
+        this.customizeMode = !!enabled;
+        if (!this.customizeMode) {
+            this.customizeDrag = null;
+            this.joystickSizeSlider.active = false;
+            this.joystickSizeSlider.touchId = null;
+            this.fireSizeSlider.active = false;
+            this.fireSizeSlider.touchId = null;
+        }
+    }
+
+    toggleCustomizeMode() {
+        this.setCustomizeMode(!this.customizeMode);
     }
 
     setVirtualControlsVisible(visible) {
@@ -304,6 +432,34 @@ class InputHandler {
         const clampedX = Math.max(minX, Math.min(maxX, x));
         this.sensitivitySlider.value = (clampedX - minX) / (maxX - minX);
         this.joystick.sensitivity = 0.6 + this.sensitivitySlider.value * 0.9;
+        this.controlLayout.sensitivity = this.joystick.sensitivity;
+        this.saveControlLayout();
+    }
+
+    updateJoystickSizeSliderFromX(x) {
+        const minX = this.joystickSizeSlider.x1;
+        const maxX = this.joystickSizeSlider.x2;
+        const clampedX = this.clamp(x, minX, maxX);
+        this.joystickSizeSlider.value = (clampedX - minX) / (maxX - minX);
+        this.controlLayout.joystickRadiusRatio = this.sliderToRadiusRatio(this.joystickSizeSlider.value);
+        this.setCanvasRect(this.canvasRect);
+        this.saveControlLayout();
+    }
+
+    updateFireSizeSliderFromX(x) {
+        const minX = this.fireSizeSlider.x1;
+        const maxX = this.fireSizeSlider.x2;
+        const clampedX = this.clamp(x, minX, maxX);
+        this.fireSizeSlider.value = (clampedX - minX) / (maxX - minX);
+        this.controlLayout.fireRadiusRatio = this.sliderToRadiusRatio(this.fireSizeSlider.value);
+        this.setCanvasRect(this.canvasRect);
+        this.saveControlLayout();
+    }
+
+    isPointInCircle(px, py, cx, cy, radius) {
+        const dx = px - cx;
+        const dy = py - cy;
+        return dx * dx + dy * dy <= radius * radius;
     }
 
     applyDeadZone(v) {
@@ -329,6 +485,7 @@ class InputHandler {
 
             if (
                 useGameplayTouchControls &&
+                this.customizeMode &&
                 !this.sensitivitySlider.active &&
                 p.y >= this.sensitivitySlider.y - 20 &&
                 p.y <= this.sensitivitySlider.y + 20 &&
@@ -343,6 +500,48 @@ class InputHandler {
 
             if (
                 useGameplayTouchControls &&
+                this.customizeMode &&
+                !this.joystickSizeSlider.active &&
+                p.y >= this.joystickSizeSlider.y - 20 &&
+                p.y <= this.joystickSizeSlider.y + 20 &&
+                p.x >= this.joystickSizeSlider.x1 - 20 &&
+                p.x <= this.joystickSizeSlider.x2 + 20
+            ) {
+                this.joystickSizeSlider.active = true;
+                this.joystickSizeSlider.touchId = touch.identifier;
+                this.updateJoystickSizeSliderFromX(p.x);
+                continue;
+            }
+
+            if (
+                useGameplayTouchControls &&
+                this.customizeMode &&
+                !this.fireSizeSlider.active &&
+                p.y >= this.fireSizeSlider.y - 20 &&
+                p.y <= this.fireSizeSlider.y + 20 &&
+                p.x >= this.fireSizeSlider.x1 - 20 &&
+                p.x <= this.fireSizeSlider.x2 + 20
+            ) {
+                this.fireSizeSlider.active = true;
+                this.fireSizeSlider.touchId = touch.identifier;
+                this.updateFireSizeSliderFromX(p.x);
+                continue;
+            }
+
+            if (useGameplayTouchControls && this.customizeMode) {
+                if (this.isPointInCircle(p.x, p.y, this.joystick.baseX, this.joystick.baseY, this.joystick.radius + 16)) {
+                    this.customizeDrag = { control: 'joystick', touchId: touch.identifier };
+                    continue;
+                }
+                if (this.isPointInCircle(p.x, p.y, this.fireButton.x, this.fireButton.y, this.fireButton.radius + 16)) {
+                    this.customizeDrag = { control: 'fire', touchId: touch.identifier };
+                    continue;
+                }
+            }
+
+            if (
+                useGameplayTouchControls &&
+                !this.customizeMode &&
                 !this.joystick.active &&
                 p.x < this.canvasRect.width * 0.5
             ) {
@@ -355,6 +554,7 @@ class InputHandler {
 
             if (
                 useGameplayTouchControls &&
+                !this.customizeMode &&
                 !this.fireButton.active &&
                 p.x >= this.canvasRect.width * 0.5
             ) {
@@ -379,6 +579,43 @@ class InputHandler {
 
             if (this.sensitivitySlider.active && touch.identifier === this.sensitivitySlider.touchId) {
                 this.updateSensitivitySliderFromX(p.x);
+                continue;
+            }
+
+            if (this.joystickSizeSlider.active && touch.identifier === this.joystickSizeSlider.touchId) {
+                this.updateJoystickSizeSliderFromX(p.x);
+                continue;
+            }
+
+            if (this.fireSizeSlider.active && touch.identifier === this.fireSizeSlider.touchId) {
+                this.updateFireSizeSliderFromX(p.x);
+                continue;
+            }
+
+            if (this.customizeDrag && touch.identifier === this.customizeDrag.touchId) {
+                if (this.customizeDrag.control === 'joystick') {
+                    const minX = this.joystick.radius + 8;
+                    const maxX = this.canvasRect.width - this.joystick.radius - 8;
+                    const minY = this.joystick.radius + 8;
+                    const maxY = this.canvasRect.height - this.joystick.radius - 8;
+                    const x = this.clamp(p.x, minX, maxX);
+                    const y = this.clamp(p.y, minY, maxY);
+                    this.controlLayout.joystickXRatio = x / this.canvasRect.width;
+                    this.controlLayout.joystickYRatio = y / this.canvasRect.height;
+                    this.setCanvasRect(this.canvasRect);
+                    this.saveControlLayout();
+                } else if (this.customizeDrag.control === 'fire') {
+                    const minX = this.fireButton.radius + 8;
+                    const maxX = this.canvasRect.width - this.fireButton.radius - 8;
+                    const minY = this.fireButton.radius + 8;
+                    const maxY = this.canvasRect.height - this.fireButton.radius - 8;
+                    const x = this.clamp(p.x, minX, maxX);
+                    const y = this.clamp(p.y, minY, maxY);
+                    this.controlLayout.fireXRatio = x / this.canvasRect.width;
+                    this.controlLayout.fireYRatio = y / this.canvasRect.height;
+                    this.setCanvasRect(this.canvasRect);
+                    this.saveControlLayout();
+                }
                 continue;
             }
 
@@ -423,6 +660,23 @@ class InputHandler {
             if (this.sensitivitySlider.active && touch.identifier === this.sensitivitySlider.touchId) {
                 this.sensitivitySlider.active = false;
                 this.sensitivitySlider.touchId = null;
+                releasedControl = true;
+            }
+
+            if (this.joystickSizeSlider.active && touch.identifier === this.joystickSizeSlider.touchId) {
+                this.joystickSizeSlider.active = false;
+                this.joystickSizeSlider.touchId = null;
+                releasedControl = true;
+            }
+
+            if (this.fireSizeSlider.active && touch.identifier === this.fireSizeSlider.touchId) {
+                this.fireSizeSlider.active = false;
+                this.fireSizeSlider.touchId = null;
+                releasedControl = true;
+            }
+
+            if (this.customizeDrag && touch.identifier === this.customizeDrag.touchId) {
+                this.customizeDrag = null;
                 releasedControl = true;
             }
 
@@ -549,6 +803,51 @@ class InputHandler {
         ctx.fillStyle = '#d6f8ff';
         ctx.font = 'bold 13px Arial';
         ctx.fillText(`SENS ${this.joystick.sensitivity.toFixed(2)}x`, (this.sensitivitySlider.x1 + this.sensitivitySlider.x2) / 2, this.sensitivitySlider.y - 12);
+
+        if (this.customizeMode) {
+            const joySliderX = this.joystickSizeSlider.x1;
+            const joySliderW = this.joystickSizeSlider.x2 - this.joystickSizeSlider.x1;
+            const joyKnobX = joySliderX + joySliderW * this.joystickSizeSlider.value;
+
+            const fireSliderX = this.fireSizeSlider.x1;
+            const fireSliderW = this.fireSizeSlider.x2 - this.fireSizeSlider.x1;
+            const fireKnobX = fireSliderX + fireSliderW * this.fireSizeSlider.value;
+
+            ctx.globalAlpha = 0.7;
+            ctx.strokeStyle = 'rgba(160,240,255,0.85)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(this.joystickSizeSlider.x1, this.joystickSizeSlider.y);
+            ctx.lineTo(this.joystickSizeSlider.x2, this.joystickSizeSlider.y);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(this.fireSizeSlider.x1, this.fireSizeSlider.y);
+            ctx.lineTo(this.fireSizeSlider.x2, this.fireSizeSlider.y);
+            ctx.stroke();
+
+            ctx.globalAlpha = 0.9;
+            ctx.fillStyle = this.joystickSizeSlider.active ? '#9ceeff' : '#d0f7ff';
+            ctx.beginPath();
+            ctx.arc(joyKnobX, this.joystickSizeSlider.y, 11, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = this.fireSizeSlider.active ? '#9ceeff' : '#d0f7ff';
+            ctx.beginPath();
+            ctx.arc(fireKnobX, this.fireSizeSlider.y, 11, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.globalAlpha = 0.95;
+            ctx.fillStyle = '#d6f8ff';
+            ctx.font = 'bold 13px Arial';
+            ctx.fillText(`JOY SIZE ${Math.round(this.joystick.radius)}px`, (this.joystickSizeSlider.x1 + this.joystickSizeSlider.x2) / 2, this.joystickSizeSlider.y - 12);
+            ctx.fillText(`FIRE SIZE ${Math.round(this.fireButton.radius)}px`, (this.fireSizeSlider.x1 + this.fireSizeSlider.x2) / 2, this.fireSizeSlider.y - 12);
+
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = '#c8f7ff';
+            ctx.font = 'bold 14px Arial';
+            ctx.fillText('DRAG JOYSTICK/FIRE TO REPOSITION', this.canvasRect.width * 0.52, this.fireSizeSlider.y + 24);
+        }
 
         ctx.restore();
     }
@@ -1763,6 +2062,10 @@ class Game {
         this.resizeCanvas();
         window.addEventListener('resize', () => this.resizeCanvas());
         window.addEventListener('orientationchange', () => this.resizeCanvas());
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', () => this.resizeCanvas());
+            window.visualViewport.addEventListener('scroll', () => this.resizeCanvas());
+        }
         
         // Game objects
         this.player = new Player(80, this.canvasHeight / 2, this.assetManager);
@@ -1792,6 +2095,8 @@ class Game {
         this.modeStoryButtonRect = null;
         this.modeEndlessButtonRect = null;
         this.gameOverButtonRect = null;
+        this.mobileEditButtonRect = null;
+        this.mobileResetButtonRect = null;
         
         // Game loop
         this.lastTime = Date.now();
@@ -1818,6 +2123,9 @@ class Game {
             // Fill the available phone viewport to avoid large black margins.
             width = Math.max(320, viewportWidth);
             height = Math.max(300, viewportHeight);
+            this.canvas.style.position = 'fixed';
+            this.canvas.style.left = '0';
+            this.canvas.style.top = '0';
         } else {
             const maxWidth = this.baseWidth;
             const maxHeight = this.baseHeight;
@@ -1829,6 +2137,10 @@ class Game {
                 height = maxHeight;
                 width = Math.round(height * ratio);
             }
+
+            this.canvas.style.position = 'relative';
+            this.canvas.style.left = '';
+            this.canvas.style.top = '';
         }
 
         this.canvas.style.width = `${width}px`;
@@ -1997,6 +2309,29 @@ class Game {
     }
     
     updatePlaying() {
+        if (this.inputHandler.showVirtualControls) {
+            const btnW = Math.min(130, Math.max(86, Math.floor(this.canvasWidth * 0.18)));
+            const btnH = this.canvasHeight < 420 ? 28 : 34;
+            const pad = this.canvasHeight < 420 ? 10 : 14;
+            const x = this.canvasWidth - btnW - pad;
+            const y = pad;
+
+            this.mobileEditButtonRect = { x: x, y: y, width: btnW, height: btnH };
+            this.mobileResetButtonRect = { x: x, y: y + btnH + 8, width: btnW, height: btnH };
+
+            if (this.inputHandler.consumeTapInRect(this.mobileEditButtonRect)) {
+                this.inputHandler.toggleCustomizeMode();
+            }
+
+            if (this.inputHandler.customizeMode && this.inputHandler.consumeTapInRect(this.mobileResetButtonRect)) {
+                this.inputHandler.resetControlLayout();
+            }
+        } else {
+            this.mobileEditButtonRect = null;
+            this.mobileResetButtonRect = null;
+            this.inputHandler.setCustomizeMode(false);
+        }
+
         // Update stars
         this.stars.forEach(star => star.update());
         this.stars = this.stars.filter(star => !star.isOffScreen(this.canvasWidth));
@@ -2729,6 +3064,37 @@ class Game {
         if (powerUpText) {
             this.ctx.fillStyle = powerUpColor;
             this.ctx.fillText(powerUpText, 20, 120);
+        }
+
+        if (this.inputHandler.showVirtualControls && this.mobileEditButtonRect) {
+            const edit = this.mobileEditButtonRect;
+            const reset = this.mobileResetButtonRect;
+            const active = this.inputHandler.customizeMode;
+
+            this.ctx.save();
+
+            this.ctx.fillStyle = active ? 'rgba(60, 190, 140, 0.34)' : 'rgba(30, 130, 200, 0.28)';
+            this.ctx.fillRect(edit.x, edit.y, edit.width, edit.height);
+            this.ctx.strokeStyle = active ? '#8bf2cb' : '#7ad2ff';
+            this.ctx.lineWidth = 2;
+            this.ctx.strokeRect(edit.x, edit.y, edit.width, edit.height);
+
+            this.ctx.fillStyle = '#e6fbff';
+            this.ctx.font = 'bold 14px Arial';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText(active ? 'UI EDIT ON' : 'UI EDIT', edit.x + edit.width / 2, edit.y + edit.height - 10);
+
+            if (active && reset) {
+                this.ctx.fillStyle = 'rgba(220, 90, 80, 0.24)';
+                this.ctx.fillRect(reset.x, reset.y, reset.width, reset.height);
+                this.ctx.strokeStyle = '#ff9d95';
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(reset.x, reset.y, reset.width, reset.height);
+                this.ctx.fillStyle = '#ffe5e2';
+                this.ctx.fillText('RESET UI', reset.x + reset.width / 2, reset.y + reset.height - 10);
+            }
+
+            this.ctx.restore();
         }
         
         // Boss health bar
