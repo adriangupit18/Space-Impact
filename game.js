@@ -180,6 +180,7 @@ class InputHandler {
             ('ontouchstart' in window) ||
             ((navigator.maxTouchPoints || 0) > 0);
         this.showVirtualControls = this.isMobile;
+        this.gameplayTouchControlsEnabled = false;
         this.canvasRect = { left: 0, top: 0, width: 800, height: 500 };
         this.tapPoints = [];
 
@@ -256,6 +257,26 @@ class InputHandler {
         this.showVirtualControls = visible;
     }
 
+    setGameplayTouchControlsEnabled(enabled) {
+        this.gameplayTouchControlsEnabled = !!enabled;
+
+        // If controls are disabled (menu screens), release active touch controls.
+        if (!this.gameplayTouchControlsEnabled) {
+            this.joystick.active = false;
+            this.joystick.touchId = null;
+            this.joystick.dx = 0;
+            this.joystick.dy = 0;
+            this.joystick.knobX = this.joystick.baseX;
+            this.joystick.knobY = this.joystick.baseY;
+
+            this.fireButton.active = false;
+            this.fireButton.touchId = null;
+
+            this.sensitivitySlider.active = false;
+            this.sensitivitySlider.touchId = null;
+        }
+    }
+
     toCanvasSpace(clientX, clientY) {
         return {
             x: clientX - this.canvasRect.left,
@@ -294,18 +315,20 @@ class InputHandler {
     }
 
     handleTouchStart(e) {
+        const useGameplayTouchControls = this.showVirtualControls && this.gameplayTouchControlsEnabled;
+
         if (e.touches && e.touches.length > 0) {
             this.isMobile = true;
             this.showVirtualControls = true;
         }
-        if (this.showVirtualControls) e.preventDefault();
+        if (useGameplayTouchControls) e.preventDefault();
 
         for (let i = 0; i < e.changedTouches.length; i++) {
             const touch = e.changedTouches[i];
             const p = this.toCanvasSpace(touch.clientX, touch.clientY);
 
             if (
-                this.showVirtualControls &&
+                useGameplayTouchControls &&
                 !this.sensitivitySlider.active &&
                 p.y >= this.sensitivitySlider.y - 20 &&
                 p.y <= this.sensitivitySlider.y + 20 &&
@@ -319,7 +342,7 @@ class InputHandler {
             }
 
             if (
-                this.showVirtualControls &&
+                useGameplayTouchControls &&
                 !this.joystick.active &&
                 p.x < this.canvasRect.width * 0.5
             ) {
@@ -335,7 +358,7 @@ class InputHandler {
             }
 
             if (
-                this.showVirtualControls &&
+                useGameplayTouchControls &&
                 !this.fireButton.active &&
                 p.x >= this.canvasRect.width * 0.5
             ) {
@@ -353,7 +376,8 @@ class InputHandler {
     }
 
     handleTouchMove(e) {
-        if (this.showVirtualControls) e.preventDefault();
+        const useGameplayTouchControls = this.showVirtualControls && this.gameplayTouchControlsEnabled;
+        if (useGameplayTouchControls) e.preventDefault();
 
         for (let i = 0; i < e.changedTouches.length; i++) {
             const touch = e.changedTouches[i];
@@ -380,7 +404,8 @@ class InputHandler {
     }
 
     handleTouchEnd(e) {
-        if (this.showVirtualControls) e.preventDefault();
+        const useGameplayTouchControls = this.showVirtualControls && this.gameplayTouchControlsEnabled;
+        if (useGameplayTouchControls) e.preventDefault();
 
         for (let i = 0; i < e.changedTouches.length; i++) {
             const touch = e.changedTouches[i];
@@ -1845,6 +1870,8 @@ class Game {
     }
     
     update() {
+        this.inputHandler.setGameplayTouchControlsEnabled(this.gameState === 'playing');
+
         if (this.gameState === 'loading') {
             // Just wait for assets to load
         } else if (this.gameState === 'start') {
@@ -2403,9 +2430,11 @@ class Game {
         this.ctx.save();
         this.ctx.globalAlpha = 0.85;
         this.ctx.fillStyle = '#9be8ff';
-        this.ctx.font = 'bold 14px Arial';
+        const compact = this.canvasHeight < 360;
+        this.ctx.font = `bold ${compact ? 11 : 14}px Arial`;
         this.ctx.textAlign = 'right';
-        this.ctx.fillText('Made by BRYLE', this.canvasWidth - 12, this.canvasHeight - 12);
+        const creditY = compact && this.gameState !== 'playing' ? 18 : this.canvasHeight - 12;
+        this.ctx.fillText('Made by BRYLE', this.canvasWidth - 12, creditY);
         this.ctx.restore();
     }
     
@@ -2427,37 +2456,48 @@ class Game {
         // Fade overlay
         this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         this.ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+
+        const compact = this.canvasHeight < 380;
+        const titleSize = Math.max(34, Math.min(60, Math.floor(this.canvasHeight * 0.14)));
+        const subtitleSize = Math.max(18, Math.min(36, Math.floor(this.canvasHeight * 0.07)));
+        const infoSize = compact ? 14 : 18;
+        const titleY = Math.max(76, Math.floor(this.canvasHeight * 0.24));
+        const subtitleY = titleY + Math.max(36, Math.floor(this.canvasHeight * 0.14));
+        const instructionY = subtitleY + Math.max(34, Math.floor(this.canvasHeight * 0.12));
+        const btnWidth = Math.min(300, Math.max(190, Math.floor(this.canvasWidth * 0.72)));
+        const btnHeight = compact ? 46 : 52;
+        const btnX = this.canvasWidth / 2 - btnWidth / 2;
+        const btnY = this.canvasHeight - btnHeight - Math.max(14, Math.floor(this.canvasHeight * 0.07));
+        this.startButtonRect = { x: btnX, y: btnY, width: btnWidth, height: btnHeight };
         
         // Title
         this.ctx.fillStyle = '#00ff00';
-        this.ctx.font = 'bold 60px Arial';
+        this.ctx.font = `bold ${titleSize}px Arial`;
         this.ctx.textAlign = 'center';
-        this.ctx.fillText('SPACE IMPACT', this.canvasWidth / 2, 120);
+        this.ctx.fillText('SPACE IMPACT', this.canvasWidth / 2, titleY);
         
         // Subtitle
-        this.ctx.font = '24px Arial';
+        this.ctx.font = `bold ${subtitleSize}px Arial`;
         this.ctx.fillStyle = '#00ccff';
-        this.ctx.fillText('With Foozle Asset Pack', this.canvasWidth / 2, 180);
+        this.ctx.fillText('With Foozle Asset Pack', this.canvasWidth / 2, subtitleY);
         
         // Instructions
-        this.ctx.font = '18px Arial';
+        this.ctx.font = `${infoSize}px Arial`;
         this.ctx.fillStyle = '#ffffff';
-        this.ctx.fillText('Arrow Keys: Move | Space: Shoot', this.canvasWidth / 2, 250);
-        this.ctx.fillText('Mobile: Touch Left to Move, Right to Shoot', this.canvasWidth / 2, 290);
+        if (compact) {
+            this.ctx.fillText('Move with touch joystick, hold FIRE to shoot', this.canvasWidth / 2, instructionY);
+        } else {
+            this.ctx.fillText('Arrow Keys: Move | Space: Shoot', this.canvasWidth / 2, instructionY);
+            this.ctx.fillText('Mobile: Touch Left to Move, Right to Shoot', this.canvasWidth / 2, instructionY + 40);
+        }
         
         // Start instruction
-        this.ctx.font = 'bold 24px Arial';
+        this.ctx.font = `bold ${compact ? 17 : 24}px Arial`;
         this.ctx.fillStyle = '#ffff00';
         const blinkAlpha = (Math.sin(Date.now() / 200) + 1) / 2;
         this.ctx.globalAlpha = 0.5 + blinkAlpha * 0.5;
-        this.ctx.fillText('Press ENTER to Continue', this.canvasWidth / 2, 400);
+        this.ctx.fillText('Press ENTER to Continue', this.canvasWidth / 2, btnY - 12);
         this.ctx.globalAlpha = 1;
-
-        const btnWidth = 260;
-        const btnHeight = 52;
-        const btnX = this.canvasWidth / 2 - btnWidth / 2;
-        const btnY = this.canvasHeight - 110;
-        this.startButtonRect = { x: btnX, y: btnY, width: btnWidth, height: btnHeight };
 
         this.ctx.fillStyle = 'rgba(0, 220, 120, 0.22)';
         this.ctx.fillRect(btnX, btnY, btnWidth, btnHeight);
@@ -2466,46 +2506,57 @@ class Game {
         this.ctx.strokeRect(btnX, btnY, btnWidth, btnHeight);
 
         this.ctx.fillStyle = '#d7ffe8';
-        this.ctx.font = 'bold 22px Arial';
+        this.ctx.font = `bold ${compact ? 18 : 22}px Arial`;
         this.ctx.textAlign = 'center';
-        this.ctx.fillText('ENTER GAME', btnX + btnWidth / 2, btnY + 34);
+        this.ctx.fillText('ENTER GAME', btnX + btnWidth / 2, btnY + (compact ? 30 : 34));
     }
     
     drawModeSelect() {
         // Fade overlay
         this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         this.ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
-        
-        this.ctx.fillStyle = '#00ff00';
-        this.ctx.font = 'bold 50px Arial';
-        this.ctx.textAlign = 'center';
-        this.ctx.fillText('SELECT MODE', this.canvasWidth / 2, 100);
-        
-        // Story mode
-        this.ctx.font = 'bold 32px Arial';
-        this.ctx.fillStyle = '#00ccff';
-        this.ctx.fillText('1. STORY', this.canvasWidth / 2, 220);
-        this.ctx.font = '18px Arial';
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.fillText('10 Levels with 3 Waves Each + Boss Every 10 Levels', this.canvasWidth / 2, 260);
-        
-        // Endless mode
-        this.ctx.font = 'bold 32px Arial';
-        this.ctx.fillStyle = '#ffff00';
-        this.ctx.fillText('2. ENDLESS', this.canvasWidth / 2, 330);
-        this.ctx.font = '18px Arial';
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.fillText('Infinite Waves with Increasing Difficulty', this.canvasWidth / 2, 370);
 
-        const btnWidth = 300;
-        const btnHeight = 48;
+        const compact = this.canvasHeight < 420;
+        const titleSize = compact ? 34 : 50;
+        const headingSize = compact ? 24 : 32;
+        const bodySize = compact ? 14 : 18;
+        const titleY = Math.max(62, Math.floor(this.canvasHeight * 0.19));
+        const storyY = Math.floor(this.canvasHeight * 0.39);
+        const endlessY = Math.floor(this.canvasHeight * 0.67);
+        const btnWidth = Math.min(320, Math.max(210, Math.floor(this.canvasWidth * 0.78)));
+        const btnHeight = compact ? 44 : 48;
         const storyBtnX = this.canvasWidth / 2 - btnWidth / 2;
-        const storyBtnY = 195;
+        const storyBtnY = storyY - Math.floor(btnHeight * 0.65);
         const endlessBtnX = this.canvasWidth / 2 - btnWidth / 2;
-        const endlessBtnY = 305;
+        const endlessBtnY = endlessY - Math.floor(btnHeight * 0.65);
 
         this.modeStoryButtonRect = { x: storyBtnX, y: storyBtnY, width: btnWidth, height: btnHeight };
         this.modeEndlessButtonRect = { x: endlessBtnX, y: endlessBtnY, width: btnWidth, height: btnHeight };
+        
+        this.ctx.fillStyle = '#00ff00';
+        this.ctx.font = `bold ${titleSize}px Arial`;
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('SELECT MODE', this.canvasWidth / 2, titleY);
+        
+        // Story mode
+        this.ctx.font = `bold ${headingSize}px Arial`;
+        this.ctx.fillStyle = '#00ccff';
+        this.ctx.fillText('1. STORY', this.canvasWidth / 2, storyY);
+        this.ctx.font = `${bodySize}px Arial`;
+        this.ctx.fillStyle = '#ffffff';
+        if (compact) {
+            this.ctx.fillText('Campaign progression with boss fights', this.canvasWidth / 2, storyY + 28);
+        } else {
+            this.ctx.fillText('10 Levels with 3 Waves Each + Boss Every 10 Levels', this.canvasWidth / 2, storyY + 40);
+        }
+        
+        // Endless mode
+        this.ctx.font = `bold ${headingSize}px Arial`;
+        this.ctx.fillStyle = '#ffff00';
+        this.ctx.fillText('2. ENDLESS', this.canvasWidth / 2, endlessY);
+        this.ctx.font = `${bodySize}px Arial`;
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.fillText('Infinite waves with scaling difficulty', this.canvasWidth / 2, endlessY + (compact ? 26 : 40));
 
         this.ctx.fillStyle = 'rgba(0, 190, 255, 0.16)';
         this.ctx.fillRect(storyBtnX, storyBtnY, btnWidth, btnHeight);
@@ -2556,34 +2607,42 @@ class Game {
     drawGameOverScreen() {
         this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
         this.ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+
+        const compact = this.canvasHeight < 420;
+        const titleSize = compact ? 40 : 60;
+        const mainSize = compact ? 24 : 40;
+        const noteSize = compact ? 16 : 24;
+        const titleY = Math.max(68, Math.floor(this.canvasHeight * 0.24));
+        const scoreY = titleY + Math.max(46, Math.floor(this.canvasHeight * 0.17));
+        const levelY = scoreY + Math.max(34, Math.floor(this.canvasHeight * 0.14));
         
         this.ctx.fillStyle = '#ff0000';
-        this.ctx.font = 'bold 60px Arial';
+        this.ctx.font = `bold ${titleSize}px Arial`;
         this.ctx.textAlign = 'center';
-        this.ctx.fillText('GAME OVER', this.canvasWidth / 2, 150);
+        this.ctx.fillText('GAME OVER', this.canvasWidth / 2, titleY);
         
         this.ctx.fillStyle = '#ffffff';
-        this.ctx.font = '40px Arial';
-        this.ctx.fillText(`Final Score: ${this.score}`, this.canvasWidth / 2, 220);
-        this.ctx.fillText(`Level Reached: ${this.level}`, this.canvasWidth / 2, 280);
+        this.ctx.font = `${mainSize}px Arial`;
+        this.ctx.fillText(`Final Score: ${this.score}`, this.canvasWidth / 2, scoreY);
+        this.ctx.fillText(`Level Reached: ${this.level}`, this.canvasWidth / 2, levelY);
         
         if (this.gameMode === 'endless') {
-            this.ctx.font = '28px Arial';
-            this.ctx.fillText(`Waves Cleared: ${this.wave}`, this.canvasWidth / 2, 330);
+            this.ctx.font = `${Math.max(20, mainSize - 8)}px Arial`;
+            this.ctx.fillText(`Waves Cleared: ${this.wave}`, this.canvasWidth / 2, levelY + Math.max(30, Math.floor(this.canvasHeight * 0.1)));
         }
         
-        this.ctx.font = 'bold 24px Arial';
+        const btnWidth = Math.min(290, Math.max(200, Math.floor(this.canvasWidth * 0.72)));
+        const btnHeight = compact ? 46 : 52;
+        const btnX = this.canvasWidth / 2 - btnWidth / 2;
+        const btnY = this.canvasHeight - btnHeight - Math.max(14, Math.floor(this.canvasHeight * 0.08));
+        this.gameOverButtonRect = { x: btnX, y: btnY, width: btnWidth, height: btnHeight };
+
+        this.ctx.font = `bold ${noteSize}px Arial`;
         this.ctx.fillStyle = '#ffff00';
         const blinkAlpha = (Math.sin(Date.now() / 200) + 1) / 2;
         this.ctx.globalAlpha = 0.5 + blinkAlpha * 0.5;
-        this.ctx.fillText('Press ENTER to Return to Menu', this.canvasWidth / 2, 420);
+        this.ctx.fillText('Press ENTER to Return to Menu', this.canvasWidth / 2, btnY - 10);
         this.ctx.globalAlpha = 1;
-
-        const btnWidth = 240;
-        const btnHeight = 52;
-        const btnX = this.canvasWidth / 2 - btnWidth / 2;
-        const btnY = this.canvasHeight - 118;
-        this.gameOverButtonRect = { x: btnX, y: btnY, width: btnWidth, height: btnHeight };
 
         this.ctx.fillStyle = 'rgba(0, 220, 120, 0.22)';
         this.ctx.fillRect(btnX, btnY, btnWidth, btnHeight);
@@ -2592,9 +2651,9 @@ class Game {
         this.ctx.strokeRect(btnX, btnY, btnWidth, btnHeight);
 
         this.ctx.fillStyle = '#d7ffe8';
-        this.ctx.font = 'bold 22px Arial';
+        this.ctx.font = `bold ${compact ? 18 : 22}px Arial`;
         this.ctx.textAlign = 'center';
-        this.ctx.fillText('ENTER GAME', btnX + btnWidth / 2, btnY + 33);
+        this.ctx.fillText('RETURN MENU', btnX + btnWidth / 2, btnY + (compact ? 30 : 33));
     }
     
     drawHUD() {
