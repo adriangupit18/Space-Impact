@@ -1592,143 +1592,322 @@ class Enemy {
 /**
  * Boss - Boss enemy
  */
-class Boss {
-    constructor(x, y, level = 1, assetManager = null) {
+class BossBullet {
+    constructor(x, y, vx, vy = 0, mode = 'straight', options = {}) {
         this.x = x;
         this.y = y;
-        this.vx = -1.5;
-        this.width = 80; // Larger
-        this.height = 65;
-        this.level = level;
-        const baseHealth = 50 + (level - 1) * 25;
-        this.maxHealth = baseHealth;
-        this.health = baseHealth;
-        this.shootCounter = 0;
-        this.pattern = 0;
-        this.attackPhase = 0;
-        this.shootInterval = Math.max(8, 20 - Math.floor((level - 1) * 0.7));
-        this.bulletBaseSpeed = 2.6 + Math.min(2.2, (level - 1) * 0.16);
-        this.assetManager = assetManager;
-        this.engineSprite = null;
-        
-        // Try to load engine effect sprite
-        if (assetManager && assetManager.get('engineBurst')) {
-            this.engineSprite = new AnimatedSprite(
-                assetManager.get('engineBurst'),
-                32, 32, 14, 12
-            );
+        this.vx = vx;
+        this.vy = vy;
+        this.mode = mode;
+        this.width = mode === 'wave' ? 18 : 16;
+        this.height = mode === 'wave' ? 12 : 10;
+        this.color = mode === 'wave' ? '#ff9f43' : '#ff5555';
+
+        this.elapsed = 0;
+        this.baseY = y;
+        this.waveAmplitude = options.waveAmplitude || 22;
+        this.waveFrequency = options.waveFrequency || 0.16;
+        this.wavePhase = options.wavePhase || 0;
+    }
+
+    update() {
+        this.elapsed++;
+        this.x += this.vx;
+
+        if (this.mode === 'wave') {
+            this.baseY += this.vy;
+            this.y = this.baseY + Math.sin(this.elapsed * this.waveFrequency + this.wavePhase) * this.waveAmplitude;
+        } else {
+            this.y += this.vy;
         }
     }
-    
-    update() {
-        this.x += this.vx;
-        
-        // Bob up and down
-        this.y = 250 + Math.sin(this.attackPhase * 0.05) * 100;
-        
-        this.shootCounter++;
-        this.attackPhase++;
-        
+
+    draw(ctx) {
+        ctx.save();
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.ellipse(this.x, this.y, this.width / 2, this.height / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = this.mode === 'wave' ? 'rgba(255,210,130,0.75)' : 'rgba(255,150,150,0.72)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(this.x + this.width * 0.45, this.y);
+        ctx.lineTo(this.x - this.width * 0.45, this.y);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    isOffScreen(canvasWidth, canvasHeight) {
+        return this.x < -40 || this.x > canvasWidth + 40 || this.y < -40 || this.y > canvasHeight + 40;
+    }
+}
+
+class Boss {
+    constructor(level = 1, assetManager = null) {
+        this.level = level;
+        this.assetManager = assetManager;
+
+        this.canvasWidth = 800;
+        this.canvasHeight = 500;
+        this.width = 180;
+        this.height = 128;
+        this.collisionRadius = 56;
+        this.x = this.canvasWidth + 130;
+        this.y = this.canvasHeight / 2;
+        this.anchorX = this.canvasWidth * 0.7;
+
+        this.bossTier = Math.max(1, Math.floor(level / 5));
+        this.entrySpeed = 1.0 + this.bossTier * 0.2;
+        this.isInPosition = false;
+
+        this.maxHealth = 520 + (this.bossTier - 1) * 320;
+        this.health = this.maxHealth;
+
+        this.movementPhase = 0; // 0: up, 1: down, 2: pause
+        this.movementTimer = 0;
+        this.movementDurations = {
+            up: Math.max(95, 145 - this.bossTier * 8),
+            down: Math.max(95, 145 - this.bossTier * 8),
+            pause: Math.max(22, 52 - this.bossTier * 7)
+        };
+        this.verticalSpeed = 0.55 + this.bossTier * 0.16;
+        this.minY = this.height * 0.42;
+        this.maxY = this.canvasHeight - this.height * 0.42;
+
+        this.baseBulletSpeed = 4.3 + (this.bossTier - 1) * 0.72;
+        this.spreadBulletCount = Math.min(13, 5 + (this.bossTier - 1) * 2);
+        if (this.spreadBulletCount % 2 === 0) {
+            this.spreadBulletCount += 1;
+        }
+        this.waveLaneCount = Math.min(7, 3 + (this.bossTier - 1));
+        if (this.waveLaneCount % 2 === 0) {
+            this.waveLaneCount += 1;
+        }
+        this.rapidLaneCount = Math.min(6, 2 + (this.bossTier - 1));
+
+        this.attackIndex = 0;
+        this.attackTimer = 0;
+        this.shotTimer = 0;
+        this.rapidLaneToggle = false;
+        this.attackPhases = [
+            { type: 'spread', duration: Math.max(84, 116 - this.bossTier * 6), interval: Math.max(11, 24 - this.bossTier * 2) },
+            { type: 'wave', duration: Math.max(100, 146 - this.bossTier * 7), interval: Math.max(10, 18 - this.bossTier) },
+            { type: 'rapid', duration: Math.max(84, 122 - this.bossTier * 8), interval: Math.max(4, 7 - Math.floor(this.bossTier / 2)) },
+            { type: 'rest', duration: Math.max(20, 60 - this.bossTier * 8), interval: Infinity }
+        ];
+
+        if (this.level >= 10) {
+            this.attackPhases.splice(2, 0, {
+                type: 'nova',
+                duration: Math.max(92, 132 - this.bossTier * 7),
+                interval: Math.max(8, 16 - this.bossTier)
+            });
+        }
+
+        this.engineSprite = null;
+        if (assetManager && assetManager.get('engineBurst')) {
+            this.engineSprite = new AnimatedSprite(assetManager.get('engineBurst'), 32, 32, 14, 14);
+        }
+    }
+
+    setArena(canvasWidth, canvasHeight) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
+        this.x = canvasWidth + this.width * 0.7;
+        this.y = canvasHeight / 2;
+        this.anchorX = canvasWidth * 0.7;
+        this.minY = this.height * 0.42;
+        this.maxY = canvasHeight - this.height * 0.42;
+    }
+
+    update(player) {
+        const bullets = [];
+
+        if (!this.isInPosition) {
+            this.x -= this.entrySpeed;
+            if (this.x <= this.anchorX) {
+                this.x = this.anchorX;
+                this.isInPosition = true;
+            }
+        } else {
+            this.handleMovementPattern();
+            const spawned = this.handleAttackCycle(player);
+            for (let i = 0; i < spawned.length; i++) {
+                bullets.push(spawned[i]);
+            }
+        }
+
         if (this.engineSprite) {
             this.engineSprite.update(16.67);
         }
+
+        return bullets;
     }
-    
+
+    handleMovementPattern() {
+        this.movementTimer++;
+
+        if (this.movementPhase === 0) {
+            this.y -= this.verticalSpeed;
+            if (this.y <= this.minY || this.movementTimer >= this.movementDurations.up) {
+                this.y = Math.max(this.minY, this.y);
+                this.movementPhase = 1;
+                this.movementTimer = 0;
+            }
+        } else if (this.movementPhase === 1) {
+            this.y += this.verticalSpeed;
+            if (this.y >= this.maxY || this.movementTimer >= this.movementDurations.down) {
+                this.y = Math.min(this.maxY, this.y);
+                this.movementPhase = 2;
+                this.movementTimer = 0;
+            }
+        } else {
+            if (this.movementTimer >= this.movementDurations.pause) {
+                this.movementPhase = 0;
+                this.movementTimer = 0;
+            }
+        }
+
+        this.y = Math.max(this.minY, Math.min(this.maxY, this.y));
+    }
+
+    handleAttackCycle(player) {
+        const spawnedBullets = [];
+        const phase = this.attackPhases[this.attackIndex];
+
+        this.attackTimer++;
+        this.shotTimer++;
+
+        if (phase.type !== 'rest' && this.shotTimer >= phase.interval) {
+            this.shotTimer = 0;
+            const shots = this.shoot(phase.type, player);
+            for (let i = 0; i < shots.length; i++) {
+                spawnedBullets.push(shots[i]);
+            }
+        }
+
+        if (this.attackTimer >= phase.duration) {
+            this.attackTimer = 0;
+            this.shotTimer = 0;
+            this.attackIndex = (this.attackIndex + 1) % this.attackPhases.length;
+        }
+
+        return spawnedBullets;
+    }
+
+    shoot(attackType, player) {
+        const bullets = [];
+        const muzzleX = this.x - this.width * 0.45;
+        const playerOffset = player ? Math.max(-36, Math.min(36, (player.y - this.y) * 0.15)) : 0;
+
+        if (attackType === 'spread') {
+            const half = Math.floor(this.spreadBulletCount / 2);
+            for (let i = -half; i <= half; i++) {
+                bullets.push(new BossBullet(
+                    muzzleX,
+                    this.y + i * 13,
+                    -this.baseBulletSpeed,
+                    i * 0.32 + playerOffset * 0.012,
+                    'straight'
+                ));
+            }
+        } else if (attackType === 'wave') {
+            const half = Math.floor(this.waveLaneCount / 2);
+            for (let i = -half; i <= half; i++) {
+                bullets.push(new BossBullet(
+                    muzzleX,
+                    this.y + i * 20,
+                    -(this.baseBulletSpeed - 0.45),
+                    0,
+                    'wave',
+                    {
+                        waveAmplitude: 16 + Math.abs(i) * 6,
+                        waveFrequency: 0.17 + this.bossTier * 0.008,
+                        wavePhase: i * 0.85
+                    }
+                ));
+            }
+        } else if (attackType === 'rapid') {
+            const half = Math.floor(this.rapidLaneCount / 2);
+            const laneShift = this.rapidLaneToggle ? 7 : -7;
+            for (let i = -half; i <= half; i++) {
+                if (this.rapidLaneCount % 2 === 0 && i === 0) {
+                    continue;
+                }
+                bullets.push(new BossBullet(
+                    muzzleX,
+                    this.y + i * 10 + laneShift,
+                    -(this.baseBulletSpeed + 1.5),
+                    i * 0.06,
+                    'straight'
+                ));
+            }
+            this.rapidLaneToggle = !this.rapidLaneToggle;
+        } else if (attackType === 'nova') {
+            for (let i = -3; i <= 3; i++) {
+                bullets.push(new BossBullet(
+                    muzzleX,
+                    this.y + i * 14,
+                    -(this.baseBulletSpeed + 0.65),
+                    i * 0.42,
+                    Math.abs(i) % 2 === 0 ? 'straight' : 'wave',
+                    {
+                        waveAmplitude: 12 + Math.abs(i) * 4,
+                        waveFrequency: 0.19 + this.bossTier * 0.01,
+                        wavePhase: i * 0.9
+                    }
+                ));
+            }
+        }
+
+        return bullets;
+    }
+
     draw(ctx) {
         ctx.save();
         ctx.translate(this.x, this.y);
-        
-        // Draw engine effect if available
+
         if (this.engineSprite) {
-            this.engineSprite.draw(ctx, -40, 0, 32, 32);
+            this.engineSprite.draw(ctx, this.width * 0.36, 0, 42, 42);
+            this.engineSprite.draw(ctx, this.width * 0.28, -24, 34, 34);
+            this.engineSprite.draw(ctx, this.width * 0.28, 24, 34, 34);
         }
-        
-        // Boss body (larger)
-        ctx.fillStyle = '#ff0000';
+
+        ctx.fillStyle = '#9b1919';
         ctx.beginPath();
-        ctx.moveTo(0, -30);
-        ctx.lineTo(-40, 30);
-        ctx.lineTo(0, 20);
-        ctx.lineTo(40, 30);
+        ctx.moveTo(-this.width * 0.44, 0);
+        ctx.lineTo(-this.width * 0.24, -this.height * 0.34);
+        ctx.lineTo(this.width * 0.3, -this.height * 0.4);
+        ctx.lineTo(this.width * 0.44, 0);
+        ctx.lineTo(this.width * 0.3, this.height * 0.4);
+        ctx.lineTo(-this.width * 0.24, this.height * 0.34);
         ctx.closePath();
         ctx.fill();
-        
-        // Boss details
-        ctx.fillStyle = '#ff6600';
-        ctx.fillRect(-20, -15, 15, 20);
-        ctx.fillRect(5, -15, 15, 20);
-        
-        // Boss eyes
-        ctx.fillStyle = '#ffff00';
+
+        ctx.fillStyle = '#d63f2f';
+        ctx.fillRect(-this.width * 0.16, -this.height * 0.24, this.width * 0.3, this.height * 0.2);
+        ctx.fillRect(-this.width * 0.16, this.height * 0.04, this.width * 0.3, this.height * 0.2);
+
+        ctx.fillStyle = '#4b0f0f';
+        ctx.fillRect(-this.width * 0.36, -this.height * 0.34, this.width * 0.1, this.height * 0.68);
+
+        ctx.fillStyle = '#ffd85c';
         ctx.beginPath();
-        ctx.arc(-12, -12, 4, 0, Math.PI * 2);
+        ctx.arc(-this.width * 0.1, -this.height * 0.14, 8, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(12, -12, 4, 0, Math.PI * 2);
+        ctx.arc(-this.width * 0.1, this.height * 0.14, 8, 0, Math.PI * 2);
         ctx.fill();
-        
+
         ctx.restore();
     }
-    
-    shouldShoot() {
-        return this.shootCounter > this.shootInterval;
-    }
-    
-    resetShootCounter() {
-        this.shootCounter = 0;
-    }
-    
-    getBulletPattern(playerX, playerY) {
-        // Multiple bullet patterns
-        const bullets = [];
-        const startX = this.x + 20;
-        const startY = this.y;
-        const laneBonus = Math.floor((this.level - 1) / 4);
-        const spreadBonus = Math.floor((this.level - 1) / 3);
-        
-        if (this.pattern === 0) {
-            // Straight line pattern
-            const laneCount = Math.min(9, 3 + laneBonus * 2);
-            const half = Math.floor(laneCount / 2);
-            for (let i = -half; i <= half; i++) {
-                bullets.push({
-                    x: startX,
-                    y: startY + i * 14,
-                    targetX: playerX,
-                    targetY: playerY,
-                    speed: this.bulletBaseSpeed
-                });
-            }
-        } else if (this.pattern === 1) {
-            // Spread pattern
-            const spreadCount = Math.min(11, 5 + spreadBonus * 2);
-            const half = Math.floor(spreadCount / 2);
-            const spreadWidth = 16 + spreadBonus * 2;
-            const randomAim = 60 + spreadBonus * 20;
-            for (let i = -half; i <= half; i++) {
-                const angleOffset = i * spreadWidth;
-                bullets.push({
-                    x: startX,
-                    y: startY + angleOffset,
-                    targetX: playerX + Math.random() * randomAim - randomAim / 2,
-                    targetY: playerY,
-                    speed: this.bulletBaseSpeed + 0.35
-                });
-            }
-        }
-        
-        this.pattern = (this.pattern + 1) % 2;
-        return bullets;
-    }
-    
-    isOffScreen(canvasWidth) {
-        return this.x < -100;
-    }
-    
+
     takeDamage(damage) {
-        this.health -= damage;
+        this.health = Math.max(0, this.health - damage);
     }
-    
+
     isAlive() {
         return this.health > 0;
     }
@@ -1747,12 +1926,21 @@ class Player {
         this.height = 32;
         this.renderWidth = 58;
         this.renderHeight = 58;
-        this.speed = 4;
+        this.baseSpeed = 4;
+        this.speed = this.baseSpeed;
         this.lives = 3;
         this.maxShield = 0;
         this.shield = 0;
         this.shootCooldown = 0;
         this.shootInterval = 10;
+        this.baseShootInterval = 10;
+        this.weaponLevel = 1;
+        this.upgradeLevel = 0;
+        this.fireRateMultiplier = 1;
+        this.laserBeamCount = 1;
+        this.laserBeamThickness = 12;
+        this.passiveShieldCooldown = 0;
+        this.passiveShieldCooldownMax = 0;
         this.rapidFireActive = false;
         this.rapidFireDuration = 0;
         this.invulnerable = false;
@@ -1797,6 +1985,8 @@ class Player {
                 32, 32, 14, 12
             );
         }
+
+        this.applyLevelUpgrade(1);
     }
     
     update(inputHandler, canvasHeight, canvasWidth) {
@@ -1853,10 +2043,14 @@ class Player {
         if (this.rapidFireDuration > 0) {
             this.rapidFireDuration--;
             this.rapidFireActive = true;
-            this.shootInterval = 5;
+            this.shootInterval = Math.max(2, this.getEffectiveShootInterval() - 2);
         } else {
             this.rapidFireActive = false;
-            this.shootInterval = 10;
+            this.shootInterval = this.getEffectiveShootInterval();
+        }
+
+        if (this.passiveShieldCooldown > 0) {
+            this.passiveShieldCooldown--;
         }
         
         if (this.dualShotDuration > 0) this.dualShotDuration--;
@@ -1981,6 +2175,119 @@ class Player {
     shoot() {
         this.shootCooldown = this.shootInterval;
     }
+
+    applyLevelUpgrade(level) {
+        this.weaponLevel = Math.max(1, Math.min(8, level));
+        this.baseShootInterval = Math.max(4, 10 - Math.floor((this.weaponLevel - 1) * 0.8));
+        this.speed = this.baseSpeed + (this.upgradeLevel >= 2 ? 0.5 : 0);
+
+        if (!this.rapidFireActive) {
+            this.shootInterval = this.getEffectiveShootInterval();
+        }
+    }
+
+    getEffectiveShootInterval() {
+        return Math.max(2, Math.round(this.baseShootInterval * this.fireRateMultiplier));
+    }
+
+    applyUpgrade() {
+        const extraTier = Math.max(0, this.upgradeLevel - 4);
+
+        this.fireRateMultiplier = 1;
+        this.laserBeamCount = 1;
+        this.laserBeamThickness = 12;
+        this.passiveShieldCooldownMax = 0;
+        this.speed = this.baseSpeed;
+
+        if (this.upgradeLevel >= 1) {
+            this.laserBeamThickness = 16;
+            this.fireRateMultiplier *= 0.9;
+        }
+
+        if (this.upgradeLevel >= 2) {
+            this.laserBeamCount = 2;
+            this.speed += 0.5;
+        }
+
+        if (this.upgradeLevel >= 3) {
+            this.laserBeamCount = 3;
+            this.passiveShieldCooldownMax = 240;
+        }
+
+        if (this.upgradeLevel >= 4) {
+            this.laserBeamThickness = 22 + extraTier * 2;
+            this.fireRateMultiplier *= Math.max(0.55, 0.84 - extraTier * 0.05);
+            this.lives++;
+        }
+
+        if (!this.rapidFireActive) {
+            this.shootInterval = this.getEffectiveShootInterval();
+        }
+    }
+
+    getLevelWeaponName() {
+        if (this.weaponLevel <= 2) return 'ZAPPER MK-I';
+        if (this.weaponLevel <= 4) return 'AUTO CANNON';
+        if (this.weaponLevel <= 6) return 'TRI-BURST';
+        return 'VOID LANCER';
+    }
+
+    createLevelBasedShots(fireX, assetManager) {
+        const shots = [];
+
+        if (this.weaponLevel === 1) {
+            shots.push(new Bullet(fireX, this.y, assetManager, 'zapper'));
+            return shots;
+        }
+
+        if (this.weaponLevel === 2) {
+            shots.push(new Bullet(fireX, this.y - 6, assetManager, 'zapper'));
+            shots.push(new Bullet(fireX, this.y + 6, assetManager, 'zapper'));
+            return shots;
+        }
+
+        if (this.weaponLevel === 3) {
+            shots.push(new Bullet(fireX, this.y - 8, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y, assetManager, 'zapper'));
+            shots.push(new Bullet(fireX, this.y + 8, assetManager, 'auto'));
+            return shots;
+        }
+
+        if (this.weaponLevel === 4) {
+            shots.push(new Bullet(fireX, this.y - 10, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y - 3, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y + 3, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y + 10, assetManager, 'auto'));
+            return shots;
+        }
+
+        if (this.weaponLevel === 5) {
+            shots.push(new Bullet(fireX, this.y - 12, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y - 5, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y, assetManager, 'biggun'));
+            shots.push(new Bullet(fireX, this.y + 5, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y + 12, assetManager, 'auto'));
+            return shots;
+        }
+
+        if (this.weaponLevel === 6) {
+            shots.push(new Bullet(fireX, this.y - 14, assetManager, 'auto'));
+            shots.push(new Bullet(fireX, this.y - 7, assetManager, 'biggun'));
+            shots.push(new Bullet(fireX, this.y, assetManager, 'biggun'));
+            shots.push(new Bullet(fireX, this.y + 7, assetManager, 'biggun'));
+            shots.push(new Bullet(fireX, this.y + 14, assetManager, 'auto'));
+            return shots;
+        }
+
+        // High levels: dense high-tech lane pattern.
+        shots.push(new Bullet(fireX, this.y - 16, assetManager, 'auto'));
+        shots.push(new Bullet(fireX, this.y - 10, assetManager, 'biggun'));
+        shots.push(new Bullet(fireX, this.y - 4, assetManager, 'biggun'));
+        shots.push(new Bullet(fireX, this.y + 4, assetManager, 'biggun'));
+        shots.push(new Bullet(fireX, this.y + 10, assetManager, 'biggun'));
+        shots.push(new Bullet(fireX, this.y + 16, assetManager, 'auto'));
+        return shots;
+    }
     
     activateShield(duration) {
         this.shield = duration;
@@ -2016,6 +2323,13 @@ class Player {
             this.shield = 0;
             return false;
         }
+
+        if (this.passiveShieldCooldownMax > 0 && this.passiveShieldCooldown <= 0) {
+            this.passiveShieldCooldown = this.passiveShieldCooldownMax;
+            this.activateInvulnerability(30);
+            return false;
+        }
+
         if (!this.invulnerable) {
             this.lives--;
             this.activateInvulnerability(120);
@@ -2050,6 +2364,10 @@ class Game {
         this.bossLevelInterval = 5;
         this.waveMultiplier = 1;
         this.bossActive = false;
+        this.scorePerLevel = 260;
+        this.nextBossLevel = 5;
+        this.upgradeMessage = '';
+        this.upgradeMessageTimer = 0;
         
         // Asset manager
         this.assetManager = new AssetManager();
@@ -2072,10 +2390,13 @@ class Game {
         this.bullets = [];
         this.enemies = [];
         this.enemyBullets = [];
+        this.bossBullets = [];
         this.explosions = [];
         this.powerUps = [];
         this.stars = this.generateStars(100);
         this.boss = null;
+        this.pausedEnemies = [];
+        this.pausedEnemyBullets = [];
         
         // Spawn control
         this.spawnCounter = 0;
@@ -2090,7 +2411,7 @@ class Game {
         this.screenShake = 0;
         this.bossWarningTimer = 0;
         this.bossWarningText = 'BOSS INCOMING!';
-        this.laserBeamRect = null;
+        this.laserBeamRects = [];
         this.startButtonRect = null;
         this.modeStoryButtonRect = null;
         this.modeEndlessButtonRect = null;
@@ -2276,6 +2597,9 @@ class Game {
         this.level = 1;
         this.wave = 1;
         this.player = new Player(80, this.canvasHeight / 2, this.assetManager);
+        this.player.applyLevelUpgrade(this.level);
+        this.player.upgradeLevel = 0;
+        this.player.applyUpgrade();
         this.bullets = [];
         this.enemies = [];
         this.enemyBullets = [];
@@ -2283,6 +2607,12 @@ class Game {
         this.powerUps = [];
         this.boss = null;
         this.bossActive = false;
+        this.bossBullets = [];
+        this.nextBossLevel = 5;
+        this.upgradeMessage = '';
+        this.upgradeMessageTimer = 0;
+        this.pausedEnemies = [];
+        this.pausedEnemyBullets = [];
         this.spawnCounter = 0;
         this.waveMultiplier = 1;
         this.waveEnemiesSpawned = 0;
@@ -2339,22 +2669,29 @@ class Game {
         
         // Update player
         this.player.update(this.inputHandler, this.canvasHeight, this.canvasWidth);
+        this.updateLevelFromScore();
         
         // Player shooting
         const spacePressed = this.inputHandler.isSpacePressed();
         const touchShoot = this.inputHandler.getTouchInput(this.canvasWidth, this.canvasHeight).shoot;
         const shootHeld = spacePressed || touchShoot;
-        this.laserBeamRect = null;
+        this.laserBeamRects = [];
 
         if (shootHeld && this.player.laserActive) {
             const beamX = this.player.x + this.player.width;
-            const beamH = 12;
-            this.laserBeamRect = {
-                x: beamX,
-                y: this.player.y - beamH / 2,
-                width: this.canvasWidth - beamX,
-                height: beamH
-            };
+            const beamH = this.player.laserBeamThickness;
+            const beamCount = Math.max(1, this.player.laserBeamCount);
+            const spacing = 16;
+            const centerShift = (beamCount - 1) * 0.5;
+            for (let i = 0; i < beamCount; i++) {
+                const offset = (i - centerShift) * spacing;
+                this.laserBeamRects.push({
+                    x: beamX,
+                    y: this.player.y + offset - beamH / 2,
+                    width: this.canvasWidth - beamX,
+                    height: beamH
+                });
+            }
         }
         
         if (shootHeld && this.player.canShoot()) {
@@ -2364,10 +2701,16 @@ class Game {
             
             // Laser weapon
             if (this.player.laserActive) {
-                const bullet = new Bullet(fireX, this.player.y, this.assetManager, 'laser');
-                bullet.width = 12;
-                bullet.height = 6;
-                this.bullets.push(bullet);
+                const beamCount = Math.max(1, this.player.laserBeamCount);
+                const spacing = 16;
+                const centerShift = (beamCount - 1) * 0.5;
+                for (let i = 0; i < beamCount; i++) {
+                    const offset = (i - centerShift) * spacing;
+                    const bullet = new Bullet(fireX, this.player.y + offset, this.assetManager, 'laser');
+                    bullet.width = 12;
+                    bullet.height = 6;
+                    this.bullets.push(bullet);
+                }
             }
             // Triple shot
             else if (this.player.tripleShotActive) {
@@ -2380,16 +2723,26 @@ class Game {
                 this.bullets.push(new Bullet(fireX, this.player.y - 5, this.assetManager, 'auto'));
                 this.bullets.push(new Bullet(fireX, this.player.y + 5, this.assetManager, 'auto'));
             }
-            // Single shot (default)
+            // Level-based permanent weapon evolution.
             else {
-                const bullet = new Bullet(fireX, this.player.y, this.assetManager, 'zapper');
-                this.bullets.push(bullet);
+                const shots = this.player.createLevelBasedShots(fireX, this.assetManager);
+                for (let i = 0; i < shots.length; i++) {
+                    this.bullets.push(shots[i]);
+                }
             }
         }
         
         // Update bullets
         this.bullets.forEach(bullet => bullet.update());
         this.bullets = this.bullets.filter(bullet => !bullet.isOffScreen(this.canvasWidth));
+
+        // Trigger boss warning at each 5-level milestone.
+        if (!this.bossActive && !this.boss && this.gameState === 'playing' && this.level >= this.nextBossLevel) {
+            this.gameState = 'bossWarn';
+            this.bossWarningTimer = 105;
+            this.bossWarningText = `BOSS LEVEL ${this.nextBossLevel}`;
+            return;
+        }
         
         // Spawn enemies - improved wave system
         this.spawnCounter++;
@@ -2435,32 +2788,13 @@ class Game {
         // Check if wave is complete
         if (!this.bossActive && !this.boss && this.waveStarted && this.waveEnemiesSpawned >= this.enemiesToSpawn && this.enemies.length === 0) {
             if (this.gameMode === 'endless') {
-                // Endless mode: boss every 5 waves
-                if (this.wave % 5 === 0) {
-                    this.gameState = 'bossWarn';
-                    this.bossWarningTimer = 120;
-                    return;
-                } else {
-                    // Next wave in endless
-                    this.wave++;
-                    this.calculateEnemiesToSpawn();
-                }
+                this.wave++;
+                this.calculateEnemiesToSpawn();
             } else {
-                // Story mode: fixed levels with waves
                 if (this.wave >= this.wavesPerLevel) {
-                    // Boss time!
-                    if (this.level % this.bossLevelInterval === 0) {
-                        // Every configured number of levels
-                        this.gameState = 'bossWarn';
-                        this.bossWarningTimer = 120;
-                        return;
-                    } else {
-                        // Next level
-                        this.gameState = 'levelUp';
-                        return;
-                    }
+                    this.wave = 1;
+                    this.calculateEnemiesToSpawn();
                 } else {
-                    // Next wave
                     this.wave++;
                     this.calculateEnemiesToSpawn();
                 }
@@ -2494,34 +2828,21 @@ class Game {
         
         // Update boss
         if (this.boss && this.bossActive) {
-            this.boss.update();
-            
-            if (this.boss.shouldShoot()) {
-                const bulletPatterns = this.boss.getBulletPattern(this.player.x, this.player.y);
-                bulletPatterns.forEach(bp => {
-                    this.enemyBullets.push(new EnemyBullet(
-                        bp.x,
-                        bp.y,
-                        bp.targetX,
-                        bp.targetY,
-                        bp.speed || 2.6,
-                        'aimed',
-                        'standard',
-                        this.assetManager
-                    ));
-                });
-                this.boss.resetShootCounter();
-            }
-            
-            if (this.boss.isOffScreen(this.canvasWidth)) {
-                this.bossActive = false;
-                this.boss = null;
+            const spawnedBossBullets = this.boss.update(this.player);
+            for (let i = 0; i < spawnedBossBullets.length; i++) {
+                this.bossBullets.push(spawnedBossBullets[i]);
             }
         }
         
         // Update enemy bullets
         this.enemyBullets.forEach(bullet => bullet.update());
         this.enemyBullets = this.enemyBullets.filter(
+            bullet => !bullet.isOffScreen(this.canvasWidth, this.canvasHeight)
+        );
+
+        // Update boss bullets
+        this.bossBullets.forEach(bullet => bullet.update());
+        this.bossBullets = this.bossBullets.filter(
             bullet => !bullet.isOffScreen(this.canvasWidth, this.canvasHeight)
         );
         
@@ -2571,18 +2892,40 @@ class Game {
         }
 
         // Collision detection: Enemy Bullets vs Laser Lane while firing laser
-        if (this.laserBeamRect) {
+        if (this.laserBeamRects.length > 0) {
             for (let i = this.enemyBullets.length - 1; i >= 0; i--) {
                 const b = this.enemyBullets[i];
                 const bx = b.x - b.width / 2;
                 const by = b.y - b.height / 2;
-                if (
-                    this.laserBeamRect.x < bx + b.width &&
-                    this.laserBeamRect.x + this.laserBeamRect.width > bx &&
-                    this.laserBeamRect.y < by + b.height &&
-                    this.laserBeamRect.y + this.laserBeamRect.height > by
-                ) {
-                    this.enemyBullets.splice(i, 1);
+                for (let r = 0; r < this.laserBeamRects.length; r++) {
+                    const lane = this.laserBeamRects[r];
+                    if (
+                        lane.x < bx + b.width &&
+                        lane.x + lane.width > bx &&
+                        lane.y < by + b.height &&
+                        lane.y + lane.height > by
+                    ) {
+                        this.enemyBullets.splice(i, 1);
+                        break;
+                    }
+                }
+            }
+
+            for (let i = this.bossBullets.length - 1; i >= 0; i--) {
+                const b = this.bossBullets[i];
+                const bx = b.x - b.width / 2;
+                const by = b.y - b.height / 2;
+                for (let r = 0; r < this.laserBeamRects.length; r++) {
+                    const lane = this.laserBeamRects[r];
+                    if (
+                        lane.x < bx + b.width &&
+                        lane.x + lane.width > bx &&
+                        lane.y < by + b.height &&
+                        lane.y + lane.height > by
+                    ) {
+                        this.bossBullets.splice(i, 1);
+                        break;
+                    }
                 }
             }
         }
@@ -2590,27 +2933,24 @@ class Game {
         // Collision detection: Bullets vs Boss
         if (this.boss && this.bossActive) {
             for (let i = this.bullets.length - 1; i >= 0; i--) {
-                if (this.checkCollisionCircle(this.bullets[i].x, this.bullets[i].y, 2, this.boss.x, this.boss.y, 40)) {
+                if (this.checkCollisionCircle(this.bullets[i].x, this.bullets[i].y, 2, this.boss.x, this.boss.y, this.boss.collisionRadius)) {
                     this.boss.takeDamage(5);
                     this.explosions.push(new Explosion(this.bullets[i].x, this.bullets[i].y, 8));
                     this.bullets.splice(i, 1);
                     
                     if (!this.boss.isAlive()) {
-                        this.explosions.push(new Explosion(this.boss.x, this.boss.y, 30));
-                        this.soundManager.explosion();
-                        this.score += 500;
-                        this.bossActive = false;
-                        this.boss = null;
-                        
-                        if (this.gameMode === 'endless') {
-                            // In endless, just move to next wave after boss
-                            this.wave++;
-                            this.calculateEnemiesToSpawn();
-                            this.gameState = 'playing';
-                        } else {
-                            // In story mode, show level up
-                            this.gameState = 'levelUp';
+                        const centerX = this.boss.x;
+                        const centerY = this.boss.y;
+                        for (let k = 0; k < 12; k++) {
+                            const angle = (Math.PI * 2 * k) / 12;
+                            const burstX = centerX + Math.cos(angle) * (20 + (k % 3) * 18);
+                            const burstY = centerY + Math.sin(angle) * (20 + (k % 3) * 18);
+                            this.explosions.push(new Explosion(burstX, burstY, 26 + (k % 4) * 8));
                         }
+                        this.soundManager.explosion();
+                        this.screenShake = 18;
+                        this.score += 2000;
+                        this.endBossFight();
                     }
                     break;
                 }
@@ -2627,6 +2967,17 @@ class Game {
                 this.enemyBullets.splice(i, 1);
             }
         }
+
+        // Collision detection: Boss Bullets vs Player
+        for (let i = this.bossBullets.length - 1; i >= 0; i--) {
+            if (this.checkCollision(this.bossBullets[i], this.player)) {
+                if (this.player.takeDamage()) {
+                    this.explosions.push(new Explosion(this.player.x, this.player.y));
+                    this.soundManager.explosion();
+                }
+                this.bossBullets.splice(i, 1);
+            }
+        }
         
         // Collision detection: Enemies vs Player
         for (let i = this.enemies.length - 1; i >= 0; i--) {
@@ -2641,7 +2992,7 @@ class Game {
         
         // Collision detection: Boss vs Player
         if (this.boss && this.bossActive) {
-            if (this.checkCollisionCircle(this.boss.x, this.boss.y, 40, this.player.x, this.player.y, 16)) {
+            if (this.checkCollisionCircle(this.boss.x, this.boss.y, this.boss.collisionRadius, this.player.x, this.player.y, 16)) {
                 if (this.player.takeDamage()) {
                     this.explosions.push(new Explosion(this.player.x, this.player.y));
                     this.soundManager.explosion();
@@ -2677,28 +3028,72 @@ class Game {
         if (!this.player.isAlive()) {
             this.gameState = 'gameOver';
         }
+
+        if (this.upgradeMessageTimer > 0) {
+            this.upgradeMessageTimer--;
+        }
         
         // Screen shake
         if (this.screenShake > 0) this.screenShake--;
     }
+
+    updateLevelFromScore() {
+        const computedLevel = Math.max(1, Math.floor(this.score / this.scorePerLevel) + 1);
+        if (computedLevel !== this.level) {
+            this.level = computedLevel;
+            this.player.applyLevelUpgrade(this.level);
+        }
+    }
+
+    startBossFight() {
+        if (this.bossActive || this.boss) {
+            return;
+        }
+
+        this.bossActive = true;
+        this.boss = new Boss(this.level, this.assetManager);
+        this.boss.setArena(this.canvasWidth, this.canvasHeight);
+
+        this.pausedEnemies = this.enemies;
+        this.pausedEnemyBullets = this.enemyBullets;
+        this.enemies = [];
+        this.enemyBullets = [];
+        this.bossBullets = [];
+        this.laserBeamRects = [];
+        this.spawnCounter = 0;
+    }
+
+    endBossFight() {
+        const defeatedBossLevel = this.nextBossLevel;
+
+        this.bossActive = false;
+        this.boss = null;
+        this.bossBullets = [];
+
+        this.enemies = this.pausedEnemies;
+        this.enemyBullets = this.pausedEnemyBullets;
+        this.pausedEnemies = [];
+        this.pausedEnemyBullets = [];
+
+        this.player.upgradeLevel++;
+        this.player.applyUpgrade();
+
+        const nextLevelAfterBoss = defeatedBossLevel + 1;
+        if (this.level < nextLevelAfterBoss) {
+            this.level = nextLevelAfterBoss;
+            this.score = Math.max(this.score, (this.level - 1) * this.scorePerLevel);
+        }
+        this.player.applyLevelUpgrade(this.level);
+
+        this.upgradeMessage = `SHIP UPGRADE MK-${this.player.upgradeLevel}`;
+        this.upgradeMessageTimer = 180;
+
+        this.nextBossLevel += 5;
+        this.spawnCounter = 0;
+    }
     
     updateLevelUp() {
-        // Update stars
-        this.stars.forEach(star => star.update());
-        this.stars = this.stars.filter(star => !star.isOffScreen(this.canvasWidth));
-        this.stars.push(new Star(this.canvasWidth, Math.random() * this.canvasHeight));
-        
-        // Progress level/wave
-        if (this.gameMode === 'endless') {
-            // In endless mode, just continue waves
-            this.wave++;
-            this.calculateEnemiesToSpawn();
-        } else {
-            // In story mode, progress to next level
-            this.level++;
-            this.wave = 1;
-            this.calculateEnemiesToSpawn();
-        }
+        // Legacy state kept for compatibility; instantly return to gameplay.
         this.gameState = 'playing';
     }
     
@@ -2710,18 +3105,8 @@ class Game {
         this.bossWarningTimer--;
         
         if (this.bossWarningTimer <= 0) {
-            let bossLevel = 1;
-            if (this.gameMode === 'endless') {
-                bossLevel = Math.max(1, Math.floor(this.wave / 5));
-            } else {
-                bossLevel = this.level;
-            }
-            this.boss = new Boss(this.canvasWidth + 100, this.canvasHeight / 2, bossLevel, this.assetManager);
-            this.bossActive = true;
+            this.startBossFight();
             this.gameState = 'playing';
-            this.spawnCounter = 0;
-            this.enemies = []; // Clear enemies during boss fight
-            this.enemyBullets = []; // Clear enemy bullets
         }
     }
     
@@ -2946,6 +3331,7 @@ class Game {
         this.bullets.forEach(bullet => bullet.draw(this.ctx));
         this.enemies.forEach(enemy => enemy.draw(this.ctx));
         this.enemyBullets.forEach(bullet => bullet.draw(this.ctx));
+        this.bossBullets.forEach(bullet => bullet.draw(this.ctx));
         this.explosions.forEach(exp => exp.draw(this.ctx));
         this.powerUps.forEach(pu => pu.draw(this.ctx));
         
@@ -3040,6 +3426,24 @@ class Game {
         // Level and Wave
         this.ctx.fillStyle = '#00ccff';
         this.ctx.fillText(`Level: ${this.level} | Wave: ${this.wave}/${this.wavesPerLevel}`, 20, 90);
+
+        this.ctx.fillStyle = '#8aff8a';
+        this.ctx.fillText(`Weapon Lv${this.player.weaponLevel}: ${this.player.getLevelWeaponName()}`, 20, 120);
+
+        this.ctx.fillStyle = '#8fd7ff';
+        this.ctx.fillText(`Ship Upgrade: MK-${this.player.upgradeLevel}`, 20, 150);
+
+        if (!this.bossActive && !this.boss && this.level >= this.nextBossLevel - 1) {
+            this.ctx.fillStyle = '#ffb84d';
+            this.ctx.fillText(`WARNING: Boss at Level ${this.nextBossLevel}`, 20, 180);
+        }
+
+        if (this.upgradeMessageTimer > 0) {
+            this.ctx.fillStyle = '#ffe466';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText(this.upgradeMessage, this.canvasWidth / 2, 66);
+            this.ctx.textAlign = 'left';
+        }
         
         // Power-up status
         let powerUpText = '';
@@ -3063,7 +3467,7 @@ class Game {
         
         if (powerUpText) {
             this.ctx.fillStyle = powerUpColor;
-            this.ctx.fillText(powerUpText, 20, 120);
+            this.ctx.fillText(powerUpText, 20, 210);
         }
 
         if (this.inputHandler.showVirtualControls && this.mobileEditButtonRect) {
@@ -3124,6 +3528,10 @@ class Game {
     }
     
     drawBossHealthBar() {
+        if (!this.boss || !this.bossActive) {
+            return;
+        }
+
         const barWidth = 200;
         const barHeight = 20;
         const x = this.canvasWidth / 2 - barWidth / 2;
